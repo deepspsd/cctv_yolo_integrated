@@ -15,8 +15,41 @@ export interface Camera {
   fps: number;
   codec: string;
   bitrate: string;
-  ip: string;
   model?: string;
+  aiState?: CameraAiState;
+}
+
+export interface AiDetection {
+  type: string;
+  label: string;
+  confidence: number;
+  bbox: [number, number, number, number]; // [x, y, w, h] normalized (0.0 - 1.0)
+  category: 'OBJECT' | 'VIOLATION' | 'COMPLIANT';
+  severity: 'NORMAL' | 'MEDIUM' | 'HIGH';
+}
+
+export interface CameraAnomaly {
+  id: string;
+  cameraId: string;
+  cameraCode: string;
+  type: string;
+  label: string;
+  confidence: number;
+  bbox?: [number, number, number, number];
+  severity: 'HIGH' | 'MEDIUM' | 'WARNING';
+  timestamp: string;
+}
+
+export interface CameraAiState {
+  cameraId: string;
+  cameraCode?: string;
+  peopleCount: number;
+  phoneViolations: number;
+  ppeViolations: number;
+  complianceScore: number;
+  detections: AiDetection[];
+  anomalies: CameraAnomaly[];
+  lastAnalyzed: string | null;
 }
 
 export interface CameraSummary {
@@ -71,7 +104,28 @@ export type StatusFilter = 'All' | CameraStatus;
 
 export type ThemeMode = 'light' | 'dark';
 
-export type AppView = 'cameras' | 'login' | 'register';
+export type AppView = 'cameras' | 'alerts' | 'login' | 'register';
+
+export interface AnomalyAlertEvent {
+  id: string;
+  cameraId: string;
+  cameraName?: string;
+  zone: string;
+  eventCategory: string;
+  anomalyType: string;
+  modelClassId?: number;
+  modelClassName?: string;
+  confidence: number;
+  severity?: string;
+  trackId?: number;
+  firstSeenAt: string;
+  confirmedAt: string;
+  endedAt?: string | null;
+  durationSeconds?: number | null;
+  status: string;
+  snapshotPath?: string | null;
+  createdAt: string;
+}
 
 export type UserRole =
   | 'Administrator'

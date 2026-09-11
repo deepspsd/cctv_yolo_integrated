@@ -1,5 +1,5 @@
-import { Camera, CameraStatus, StreamInfo, CameraTestResult } from '../types';
-import { apiFetch, getStoredToken } from './authService';
+import { Camera, CameraStatus, StreamInfo, CameraTestResult, CameraAiState, CameraAnomaly } from '../types';
+import { apiFetch, getStoredToken, tryRefreshToken } from './authService';
 
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:5000/api';
 const WS_BASE_URL  = (import.meta as any).env?.VITE_WS_URL       || 'ws://localhost:5000/ws/cameras';
@@ -105,6 +105,12 @@ class CameraWebSocketClient {
     this.isConnecting = false;
   }
 
+  send(data: any) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(typeof data === 'string' ? data : JSON.stringify(data));
+    }
+  }
+
   private connect() {
     if (this.isConnecting || (this.ws && this.ws.readyState === WebSocket.OPEN)) return;
 
@@ -139,13 +145,25 @@ class CameraWebSocketClient {
         } catch { /* ignore non-JSON */ }
       };
 
-      this.ws.onclose = () => {
+      this.ws.onclose = async (event: CloseEvent) => {
         this.isConnecting = false;
         if (this.pingInterval) clearInterval(this.pingInterval);
-        // Reconnect after 3s if token still valid
+        
+        // If auth failed (4001) or expired token, attempt silent refresh
+        if (event.code === 4001) {
+          const refreshed = await tryRefreshToken();
+          if (refreshed) {
+            this.connect();
+            return;
+          }
+        }
+
+        // Reconnect after 3s if token exists
         if (!this.reconnectTimer && getStoredToken()) {
-          this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = setTimeout(async () => {
             this.reconnectTimer = null;
+            // Proactively try token refresh if previous connection dropped
+            await tryRefreshToken().catch(() => {});
             this.connect();
           }, 3000);
         }
@@ -284,6 +302,25 @@ class CameraService {
 
   async getCameraStatus(cameraId: string): Promise<Camera> {
     return this._json<Camera>(`/cameras/${cameraId}/status`);
+  }
+
+  async getCameraAi(cameraId: string): Promise<CameraAiState> {
+    return this._json<CameraAiState>(`/cameras/${cameraId}/ai`);
+  }
+
+  async triggerCameraAiAnalysis(cameraId: string): Promise<CameraAiState> {
+    return this._json<CameraAiState>(`/cameras/${cameraId}/ai/analyze`, { method: 'POST' });
+  }
+
+  async detectFrame(cameraId: string, imageBase64: string): Promise<CameraAiState> {
+    return this._json<CameraAiState>(`/cameras/${cameraId}/ai/detect-frame`, {
+      method: 'POST',
+      body: JSON.stringify({ image: imageBase64 }),
+    });
+  }
+
+  async getRecentAnomalies(limit: number = 20): Promise<CameraAnomaly[]> {
+    return this._json<CameraAnomaly[]>(`/cameras/anomalies/recent?limit=${limit}`);
   }
 
   async resetToDefaults(): Promise<Camera[]> {

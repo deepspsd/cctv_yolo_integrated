@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Integer, DateTime, Enum, Text, Boolean, ForeignKey
+from sqlalchemy import Column, String, Integer, Float, DateTime, Enum, Text, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -42,6 +42,8 @@ class Camera(Base):
 
     # Stream sessions relationship
     stream_sessions = relationship("StreamSession", back_populates="camera", cascade="all, delete-orphan")
+    ai_config = relationship("AiCameraConfig", back_populates="camera", uselist=False, cascade="all, delete-orphan")
+    anomalies = relationship("AnomalyEvent", back_populates="camera", cascade="all, delete-orphan")
 
 
 class StreamSession(Base):
@@ -55,6 +57,46 @@ class StreamSession(Base):
     viewer_count = Column(Integer, default=0, nullable=False)
 
     camera = relationship("Camera", back_populates="stream_sessions")
+
+
+class AiCameraConfig(Base):
+    __tablename__ = "ai_camera_config"
+
+    camera_id = Column(String(64), ForeignKey("cameras.id", ondelete="CASCADE"), primary_key=True)
+    enabled = Column(Boolean, default=True, nullable=False)
+    inference_fps = Column(Integer, default=5, nullable=False)
+    confidence_threshold = Column(Float, default=0.45, nullable=False)
+    image_size = Column(Integer, default=640, nullable=False)
+    enabled_rules = Column(Text, nullable=False, default='["NO_HARDHAT", "NO_MASK", "NO_SAFETY_VEST", "PERSON_DETECTED", "PHONE_VIOLATION"]')
+    confirmation_frames = Column(Integer, default=3, nullable=False)
+    cooldown_seconds = Column(Integer, default=10, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+    camera = relationship("Camera", back_populates="ai_config")
+
+
+class AnomalyEvent(Base):
+    __tablename__ = "anomaly_events"
+
+    id = Column(String(64), primary_key=True, index=True)
+    camera_id = Column(String(64), ForeignKey("cameras.id", ondelete="CASCADE"), nullable=False, index=True)
+    zone = Column(String(64), nullable=False, index=True)
+    event_category = Column(String(32), nullable=False)  # DETECTION, VIOLATION
+    anomaly_type = Column(String(64), nullable=False, index=True)  # NO_HARDHAT, NO_MASK, NO_SAFETY_VEST, PERSON_DETECTED, PHONE_VIOLATION, MACHINERY_HAZARD
+    model_class_id = Column(Integer, nullable=True)
+    model_class_name = Column(String(64), nullable=True)
+    confidence = Column(Float, nullable=False)
+    track_id = Column(Integer, nullable=True)
+    first_seen_at = Column(DateTime, nullable=False)
+    confirmed_at = Column(DateTime, nullable=False)
+    ended_at = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    status = Column(String(32), default="CONFIRMED", nullable=False, index=True)  # ACTIVE, CONFIRMED, ENDED
+    snapshot_path = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+
+    camera = relationship("Camera", back_populates="anomalies")
 
 
 class UserRoleEnum(str, enum.Enum):

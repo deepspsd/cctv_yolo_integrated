@@ -41,3 +41,7 @@ hls/
 
 # Logs
 *.log
+
+# Runtime Data & Evidence
+data/
+evidence/

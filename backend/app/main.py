@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,8 +10,13 @@ from app.database import engine, Base, AsyncSessionLocal
 from app.models import Camera
 from app.routes.cameras import router as cameras_router
 from app.routes.auth import router as auth_router, seed_default_users
+from app.routes.ai import router as ai_router
+from app.routes.anomalies import router as anomalies_router
 from app.health_manager import health_manager
+from app.ai_engine import ai_engine
 from app.websocket_manager import ws_manager
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 # Logging setup
 logging.basicConfig(
@@ -33,10 +39,14 @@ async def lifespan(app: FastAPI):
     # Start asynchronous background camera health checker
     health_manager.start()
 
+    # Start asynchronous low-load AI inference engine (YOLOv8 + PPE)
+    ai_engine.start()
+
     yield
 
     # Shutdown
     logger.info("Shutting down background tasks...")
+    await ai_engine.stop()
     await health_manager.stop()
     await engine.dispose()
     logger.info("Application shutdown complete.")
@@ -64,6 +74,13 @@ app.add_middleware(
 # Include API routes
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(cameras_router, prefix=settings.API_V1_STR)
+app.include_router(ai_router, prefix=settings.API_V1_STR)
+app.include_router(anomalies_router, prefix=settings.API_V1_STR)
+
+# Mount evidence snapshots directory for local inspection
+evidence_dir = Path(settings.AI_EVIDENCE_DIR)
+evidence_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/data/evidence", StaticFiles(directory=str(evidence_dir)), name="evidence")
 
 
 # Real-time WebSocket endpoint — token validated via ?token= query param
@@ -71,12 +88,15 @@ app.include_router(cameras_router, prefix=settings.API_V1_STR)
 async def websocket_cameras_endpoint(websocket: WebSocket, token: str | None = None):
     # Validate JWT before accepting connection
     if not token:
+        await websocket.accept()
         await websocket.close(code=4001, reason="Missing authentication token.")
         return
     try:
         from app.auth import decode_access_token
         decode_access_token(token)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"WS auth token rejected: {e}")
+        await websocket.accept()
         await websocket.close(code=4001, reason="Invalid or expired token.")
         return
 
@@ -86,6 +106,23 @@ async def websocket_cameras_endpoint(websocket: WebSocket, token: str | None = N
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text("pong")
+            elif data.startswith("{"):
+                try:
+                    import json
+                    msg = json.loads(data)
+                    if msg.get("action") == "DETECT_FRAME" and "image" in msg:
+                        cam_id = msg.get("cameraId", "")
+                        cam_code = msg.get("cameraCode", "CAM")
+                        loop = asyncio.get_running_loop()
+                        ai_state = await loop.run_in_executor(
+                            None, ai_engine.process_b64_frame, cam_id, cam_code, msg["image"]
+                        )
+                        await websocket.send_text(json.dumps({
+                            "type": "CAMERA_AI_UPDATE",
+                            "payload": ai_state
+                        }))
+                except Exception as e:
+                    logger.debug(f"WS frame detection error: {e}")
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
     except Exception as e:
@@ -118,7 +155,8 @@ async def health_check():
         "status": overall,
         "database": db_status,
         "streaming_service": streaming_status,
-        "camera_health_manager": "running" if health_manager._running else "stopped"
+        "camera_health_manager": "running" if health_manager._running else "stopped",
+        "ai_inference_engine": "running" if ai_engine._running else "stopped"
     }
 
 

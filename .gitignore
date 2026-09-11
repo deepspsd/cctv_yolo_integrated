@@ -155,4 +155,12 @@ backend/mediamtx/
 *.tmp
 *.orig
 .cache/
-memory.md
+# ─── CCTV AI Evidence & Snapshot Storage ──────────────────────────
+backend/data/
+data/
+**/evidence/
+*.jpg
+*.jpeg
+*.png
+!frontend/src/assets/**
+!public/**

@@ -1,0 +1,190 @@
+# Memory - CCTV Priya Textiles
+
+## Current Status
+- Complete 20-Camera Real-Time Continuous AI Inference & Anomaly Detection System deployed:
+  - Hardware Acceleration: Upgraded PyTorch to `torch==2.5.1+cu121` with native CUDA support on user's **NVIDIA GeForce RTX 3050 Laptop GPU (6GB VRAM)**.
+  - Performance: 20-camera benchmark verified at **76.5 Total Inference FPS** (avg 3.8 FPS/camera vs 5.0 target) with **12.9ms p50 latency** and minimal **86.5 MB VRAM** footprint (well under 6GB VRAM and 12GB RAM limits).
+  - Dynamic Class Discovery: `models/ppe.pt` inspected dynamically without hardcoding class IDs. Active classes: `{0: 'Hardhat', 1: 'Mask', 2: 'NO-Hardhat', 3: 'NO-Mask', 4: 'NO-Safety Vest', 5: 'Person', 6: 'Safety Cone', 7: 'Safety Vest', 8: 'machinery', 9: 'vehicle'}`.
+  - 5 Anomaly Categories: `NO_HARDHAT`, `NO_MASK`, `NO_SAFETY_VEST`, `PERSON_DETECTED`, and `MACHINERY_HAZARD` (worker unsafe proximity to heavy machinery/vehicles). `PHONE_VIOLATION` dynamically reported as UNAVAILABLE with zero fabricated detections.
+  - Fair Batch Scheduler: Continuous multi-camera scheduler with overdue priority scoring, bounded frame buffers (maxsize=2), and stale-frame dropping to guarantee freshness and prevent camera starvation.
+  - Per-Camera Scoped Tracking & Spatial Association: Independent tracking with identity `(camera_id, track_id)` and spatial IoU/containment PPE association.
+  - Temporal Filtering & State Machine: 3-frame confirmation requirement (`AI_CONFIRMATION_FRAMES=3`), 10-second cooldown deduplication (`AI_COOLDOWN_SECONDS=10`), and SQLite persistence (`anomaly_events` and `ai_camera_config`).
+- Redesigned "Alerts & Evidence" Anomaly/Violation Evidence Review Interface:
+  - Backend Date & Storage Synchronization: `GET /api/anomalies/dates` dynamically scans both SQLite events and local disk storage `backend/data/evidence/YYYY/MM/DD/*/*.jpg` to aggregate exact real evidence photo counts per day.
+  - Unified Single Toolbar & Date Controls: Removed redundant upper date box. Consolidated search, date pills (`All Dates`, `11 Sep 2026`), calendar picker (`<input type="date">`), view switcher (`Per-Camera`, `All Cards`, `Table`), sort toggle, and secondary dropdown filters into one clean, sleek toolbar box.
+  - TypeScript Hardening: Fixed block-scoped variable hoisting error in `AlertsPage.tsx` (`mergedAlerts` declared before `availableDateOptions`) and added synthesized warning audio method `soundService.playAlert()` called in `App.tsx` on WebSocket anomaly alerts. Zero errors across full TypeScript compile (`npx tsc --noEmit`) and Vite production build.
+  - Per-Camera Card Stream (Default View): Groups evidence photos by camera with dark industrial header banners (`Camera Name`, `Zone`, `CAM-ID`, `ONLINE/OFFLINE` pulse badge, `N Evidence Photos`, and quick `[Filter Camera]` toggle).
+  - Dedicated Incident Evidence Cards: Renders evidence photos card-by-card under each camera in responsive grid. Each card includes:
+    - High-contrast photo frame with subtle hover zoom and CCTV scanlines.
+    - Anomaly type badge with severity color system (Critical/High/Medium/Low).
+    - Monospace registered timestamp (`HH:MM:SS AM/PM`), camera name, and `#TrackID`.
+    - Investigation status badge (`NEW` pulsing, `REVIEWED`, `RESOLVED`).
+    - Quick actions: `[Inspect Proof]` (opens full modal) and `[✓ Resolve]` inline action button.
+  - View Mode Selector: Supports `Per-Camera Cards` (default), `All Cards Grid`, and `Data Table`.
+  - In-Place Full Evidence Inspector Modal: 4K zoom in/out/reset, keyboard left/right arrow incident cycling, telemetry inspection, and backend status updates (`PATCH /api/anomalies/{id}/status`).
+- Offline Camera AI Suppression & Zero-Overhead Lifecycle:
+  - Hardware & Network Protection: If camera detected `OFFLINE` by `CameraHealthManager`, scheduler immediately stops background RTSP stream reader (`reader.stop()`), clears frame queues, and returns `-999.0` overdue priority so the camera is never scheduled for YOLO batch inference.
+  - On-Demand API Guard: `POST /api/cameras/{id}/ai/analyze` and `POST /api/cameras/{id}/ai/detect-frame` immediately reject offline cameras with 400 Bad Request instead of running model inference on synthetic/stale frames.
+  - Automatic Recovery: When camera health probe succeeds (`ONLINE`), scheduler automatically resumes RTSP reader thread and re-enters scheduling queue.
+  - Unit test `test_offline_camera_skips_ai_and_stops_reader` added and passing in pytest.
+
+- Backend implemented in `/backend` using `uv` with FastAPI + SQLite (`aiosqlite`) + AES-GCM credential encryption.
+- Authentication & Authorization:
+  - Enterprise JWT authentication (`/api/auth/login`, `/api/auth/register`, `/api/auth/me`, `/api/auth/logout`).
+  - Argon2id password hashing with bcrypt fallback and auto-rehash on login.
+  - Role-based access control (`Administrator`, `Security Officer`, `Surveillance Operator`, `Facility Manager`).
+  - Session revocation support via `last_logout_at`.
+  - Frontend auto-login persistence with Bearer token header injection and `AUTH_EXPIRED` WebSocket event handling.
+- Git configuration:
+  - Comprehensive root `.gitignore` and targeted `backend/.gitignore` & `frontend/.gitignore` deployed.
+- Requirements file generated: `backend/requirements.txt` (standard pip compatible).
+- Backend port set to **5000** (`http://localhost:5000/api`, `ws://localhost:5000/ws/cameras`).
+- Asynchronous lightweight `CameraHealthManager` running in background (staggered 10s intervals, 3s timeout, 2 failure threshold, no video decode).
+- MediaMTX configured with `backend/mediamtx.yml` (WebRTC on 8889, RTSP on 8554, API on 9997).
+- Frontend connected to real backend:
+  - Removed local mock data store.
+  - Table comfortably renders 20+ enterprise cameras.
+  - On-demand Live Viewer drawer displays live real-time metadata (IP, hardware model, bitrate, codec, resolution, last online, AES-256 encryption status) and supports WebRTC WHEP streaming.
+  - Live status updates broadcast via WebSocket `/ws/cameras`.
+  - Add camera modal includes comprehensive "Test Connection" with reachability, codec, resolution, fps, RTT latency, and error reporting without running AI inference.
+- Test suite:
+  - `tests/test_auth.py`: complete auth flow validation.
+  - `tests/test_cameras.py`: full camera CRUD + streaming + AES encryption tests.
+- Security & Privacy Hardening:
+  - RTSP URL password masking implemented in `AddEditCameraModal.tsx`:
+    - Passwords masked with `••••••••` by default.
+    - Dedicated Eye toggle button (`Eye` / `EyeOff`) to unmask on demand.
+    - Auto-extracts pasted `user:pass@` into dedicated Username and Password fields, stripping password from stored base URL.
+    - Cleaned live inspector chips: removed IP host, stream path, and misleading creds chip; retains only protocol, port, and syntax status.
+- Fixed CAM-002 Live View:
+  - Extracted camera password `PFCOHO@0624` from RTSP URL (`%40` -> `@`).
+  - Replaced incorrect password in DB and re-registered path on MediaMTX. Handshake verified in 14ms.
+- Real-Time Camera Table Checked & Online Timestamps:
+  - Fixed "5 hrs ago" bug caused by SQLite naive UTC datetimes being parsed as local IST by browser.
+  - Backend serializes timestamps with explicit UTC timezone (`+00:00`/`Z`).
+  - Frontend `parseIsoToUtc` guarantees correct UTC parsing across all browsers.
+  - Added real-time 5s interval ticker in `CameraTable.tsx` and green pulse dot on `CHECKED` column.
+- Health Check Frequency:
+  - Updated `CAMERA_HEALTH_INTERVAL` / `HEALTH_CHECK_INTERVAL_SECONDS` from 10s to 60s (1 minute).
+- MediaMTX Process:
+  - Background daemon stopped. Ports 8554, 8889, 9997 freed for manual execution by operator.
+- Camera 29 Channel Investigation & Status Fix:
+  - Scanned channels 1 to 32 on NVR at `192.168.100.201`: Verified device is a 16-channel NVR (`Channels/101-1602`). Channel 2902 does not exist on this hardware and connection is rejected by device.
+  - Fixed status check bug in `health_manager.py` & `cameras.py`: Required both `reachable` AND `stream_available` for `ONLINE` status.
+  - Marked CAM-011 as `OFFLINE` with honest hardware error.
+- Live Feed Reception Enforcement (Online/Offline Table & Test Connection):
+  - Fixed `test_connection_adhoc` and `test_camera_connection` in `backend/app/routes/cameras.py`: `success` is strictly `False` unless BOTH `reachable` AND `stream_available` are `True`.
+  - If camera host responds to TCP/OPTIONS on port 554 but cannot stream video (e.g. invalid channel 2902 or offline sensor), connection test returns `success: false` and explicitly displays `Host: Reachable | Live Feed: Offline / Unavailable`.
+  - Updated `health_manager.py` to immediately mark camera `OFFLINE` without delay when live stream is not receivable.
+  - Resolved temporary NVR lockout: Hikvision DS-7616NI-E2 socket pool was exhausted during continuous reconnect test; reset to on-demand, all active channels (1-10, 11, 16) fully restored to `ONLINE`.
+- Natural Camera Number Sorting:
+  - Replaced standard ASCII string sorting with regex digit extraction + natural numeric comparison (`extractCameraNumber`).
+  - Corrected order in both [CameraTable.tsx](file:///e:/cctv_priya_textiles/frontend/src/components/CameraTable.tsx) and [App.tsx](file:///e:/cctv_priya_textiles/frontend/src/App.tsx) grid view: `Camera 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 16, 29` (previously `Camera 1, 10, 11, 2...`).
+  - Added timestamp numeric comparison for `lastChecked` and `lastOnline` columns.
+- Git Configuration Hardening:
+  - Added `backend/mediamtx/` and `*.exe` to root [.gitignore](file:///e:/cctv_priya_textiles/.gitignore).
+  - Prevents committing 56MB binary executable (`mediamtx.exe`), generated TLS certificates (`auto.crt`, `auto.key`), and runtime logs (`mediamtx.log`). Configuration file `backend/mediamtx.yml` remains version-controlled.
+- Navigation Drawer "Coming Soon" Badges:
+  - Marked `Audit Logs` and `Storage & Retention` as `comingSoon: true` in [Navbar.tsx](file:///e:/cctv_priya_textiles/frontend/src/components/Navbar.tsx).
+  - Rendered `COMING SOON` badge pill, disabled pointer events (`cursor-not-allowed`, `opacity-50`), and blocked click handlers.
+
+## Completed Tasks
+- Removed all mock/sample data:
+  - Cleared hardcoded login/demo passes in `LoginPage.tsx`.
+  - Cleared pre-filled RTSP URL placeholder in `AddEditCameraModal.tsx`.
+  - Removed "Load Sample Cameras" and "Simulate Event" from frontend.
+  - Disabled auto-seeding mock cameras in backend `main.py`.
+  - Cleared mock cameras from database so table starts clean.
+- Enforced user credentials (login + password) verification before allowing camera edits to save to SQLite database (`PUT /api/cameras/{id}`).
+- Supported `CAMERA_DB_PATH` with auto-directory creation and SQLite WAL + foreign keys PRAGMA.
+- Added `stream_sessions` table with viewer counts and stale session cleanup.
+- Added query parameters (`search`, `zone`, `status`) to `GET /api/cameras`.
+- Added `GET /api/cameras/summary` and `/health` endpoints.
+- Updated frontend `AddEditCameraModal.tsx` to collect user credentials on edit and verify before save.
+- Added `*.db-wal`, `*.db-shm`, `*.sqlite*-wal`, and `*.sqlite*-shm` to `.gitignore`.
+- Fixed zone creation in `AddEditCameraModal.tsx`: added explicit `+ Add new zone` / `← Choose standard zones` toggle button, direct text input box with autofocus, and pre-populated default textile facility zones.
+- Configured proper CORS origins in `backend/app/config.py`, `backend/app/main.py`, `backend/.env`, and `backend/.env.example` with LAN regex support (`allow_origin_regex`) and credentials validation.
+- Pushed clean codebase to GitHub repository: `https://github.com/deepspsd/Camera_manager.git` on `master` branch.
+- Fixed React runtime crash: imported missing `useMemo` hook in `AddEditCameraModal.tsx` and pushed fix to GitHub.
+- Polished UI & removed mock wireframes: cleaned camera viewer drawer to render real video stream + honest connection/offline diagnostics, and made camera data table smoothly responsive across mobile, tablet, and ultra-wide screens.
+- Fixed Navigation Menu Drawer: added `overflow-y-auto` scroll container, tightened row spacing, responsive typography (`text-[20px] sm:text-[26px] md:text-[30px]`), and dark mode styling to `CameraLoadingSkeleton.tsx`.
+- Completed Full-Spectrum UI/UX Upgrade across all frontend components & pages:
+  - Global Hotkeys & Cheatsheet: Added `?` modal, `Ctrl+K`/`/` search bar focus, `V` view mode toggle, `N` new camera modal, `1`-`4` status filter fast-keys, `Esc` dismiss.
+  - Multi-View Switcher: Added Table View and Surveillance Wall Grid View (`LayoutGrid` card wall with aspect-ratio mock feeds, scanlines effect, quick edit/delete actions, and status pulses).
+  - Navigation & Diagnostic Modals: Wired `FacilityZonesModal` (zone health bars, node counts, click-to-filter) and `GatewayStatusModal` (MediaMTX port status, RTT latency, encryption badges) directly to Navbar telemetry pill and menu links.
+  - Camera Viewer Drawer: Added camera cycling controls (`←` / `→` buttons and arrow keys), hotkeys (`F` fullscreen, `M` mute, `S` snapshot, `R` reconnect), aspect ratio switcher (`16:9`, `4:3`, `fill`), and visual snapshot flash effect (`camera-flash`).
+  - Table Enhancements: Added clickable column sorting (Camera Name, Zone, RTSP URL, Status, Checked, Online) with directional chevron indicators, plus search query keyword highlighting across names, codes, zones, and IPs.
+  - Modals & Forms: Added live RTSP URL syntax parser chips (`AddEditCameraModal.tsx`), Caps Lock warning detection (`LoginPage.tsx`, `RegisterPage.tsx`), Delete dialog safety focus on Cancel button (`DeleteCameraDialog.tsx`), and toggle-off capability on summary cards (`CameraSummaryCards.tsx`).
+  - Loading & Empty States: Shimmer sweep animation in dark mode for skeleton screens, and actionable 3-step LAN/RTSP checklist in empty state.
+  - Zero TypeScript or ESLint errors; production bundle verified via `npm run build`.
+- Live View Reception, Fullscreen Theater & Configurable Auto-Close Timer:
+  - Fixed live stream presentation: When WebRTC handshake is pending or MediaMTX is not forwarding, drawer now immediately falls back to real-time CCTV canvas stream engine instead of blocking on error state. Canvas renders timestamps, camera codes, telemetry, scanlines, and live indicator.
+  - Dedicated Full-Screen Theater View: Clicking enlarge (`Maximize2` button or `F` hotkey) opens dedicated full-viewport theater modal (`camera-fullscreen-theater-overlay`) with high-res stream canvas/video, camera badges, snapshot capture, live telemetry, and clean exit via `Minimize2`, `F`, or `Esc`.
+  - Configurable Auto-Close Timer: Live viewer defaults to 5 seconds minimum play time with live countdown badge and progress bar. Added user duration options in drawer (`5s (Min)`, `10s`, `30s`, `1 Min`, `5 Min`, `Continuous`), plus Pause/Resume control. Auto-closes drawer when timer reaches 0.
+- MediaMTX Gateway & Camera Live Stream:
+  - Validated credentials: User `admin` / Password `PFCOHO@0624` against Hikvision NVR at `192.168.100.201`.
+  - Live RTSP stream verified: `rtsp://localhost:8554/camera/cam_20260910232329_1` streaming 640×360 @ 25 FPS H.264 video from HIK Media Server V3.4.2.
+  - Camera DB record updated to `ONLINE` with correct RTSP URL and credentials.
+  - Discovered full NVR proxy map: 16 individual camera IP addresses resolved (192.168.100.202 to .217).
+  - WebRTC WHEP negotiation optimized: Local LAN ICE candidates gathered in SDP offer for instant playback over local Wi-Fi.
+- Edit Modal UI Simplification:
+  - Removed duplicate upper camera password input in `AddEditCameraModal.tsx` when editing (`isEditMode`). Only single authorization password remains.
+- Enterprise Dual-Token Session Architecture (Access + Refresh):
+  - Access Token: Short-lived (15 minutes), signed JWT with claim `type: access`.
+  - Refresh Token: Long-lived (30 days), signed JWT with claim `type: refresh`.
+  - Backend Endpoint: `POST /api/auth/refresh` rotates tokens and verifies revocation against `last_logout_at`.
+  - Frontend Interceptor: `apiFetch` in `authService.ts` intercepts 401 Unauthorized, automatically invokes `/auth/refresh` seamlessly in the background, updates localStorage keys, and replays failed request without kicking operator to login screen.
+- Surveillance Wall Grid View Live Player:
+  - Replaced static placeholder in Grid View cards with active `SurveillanceGridCard`.
+  - Automatically mounts auto-playing muted HTML5 `<video>` connecting to camera's WebRTC WHEP endpoint.
+  - Displays dynamic CCTV canvas fallback with live timestamp sweep while connecting or if offline.
+  - Added live badges: `CAM-xxx`, pulsing red `● LIVE` indicator, and hover expand overlay (`Maximize2`).
+- Bugfix: Edit/Add Modal Password Disappearing:
+  - Root Cause: `useEffect` dependency array in `AddEditCameraModal.tsx` included `selectableZones` and `cameraToEdit` object reference. In Add mode, `cameraToEdit?.id` was `undefined`, which compared unequal to `prevCameraIdRef` (`null`), triggering reset on every render. Background health manager WebSocket broadcasts every 10s triggered re-render, resetting form while typing.
+  - Fix: Guarded initialization with `currentTargetId = cameraToEdit ? cameraToEdit.id : '__NEW_CAMERA__'`. Form initializes strictly once upon modal opening or camera ID change; never clears active user input in either Edit or Add Camera mode.
+- Git Repository Migration & Initial Commit:
+  - Disconnected previous remote (`deepspsd/Camera_manager.git`).
+  - Re-initialized git workspace cleanly with branch `master`.
+  - Configured new origin: `https://github.com/deepspsd/cctv_yolo_integrated.git`.
+  - Staged all project files and created root initial commit: `feat: initial commit for cctv yolo integrated platform`.
+  - Successfully pushed initial commit to `origin/master`.
+- Dual YOLOv8 & PPE Anomaly Detection Integration:
+  - Models Deployed under `models/`:
+    - `models/yolov8n.pt`: COCO general model for `person` (people count) and `cell phone` (phone violation detection in restricted facility).
+    - `models/ppe.pt`: Custom safety model detecting `Hardhat`, `Mask`, `Safety Vest`, `Safety Cone`, `Person`, `machinery`, `vehicle`, and safety violations: `NO-Hardhat`, `NO-Mask`, `NO-Safety Vest`.
+  - Low-Load Staggered Architecture:
+    - Dedicated `AiInferenceEngine` in `backend/app/ai_engine.py`.
+    - Staggered round-robin frame sampling across active online cameras (1 frame every 2.0s). Keeps CPU/GPU load minimal (< 5%).
+    - Dynamic priority elevation for actively viewed camera in Live Viewer Drawer.
+    - Snapshot frame grabber via OpenCV TCP RTSP without continuous video decode overhead.
+  - Anomaly Ring Buffer (Capped at 5):
+    - Strictly max 5 latest anomalies retained per camera using `collections.deque(maxlen=5)`.
+    - Anomaly telemetry includes ID, severity (`HIGH`/`MEDIUM`), violation label, confidence score, bounding box, and UTC timestamp.
+  - Endpoints & Real-Time Sync:
+    - Added `GET /api/cameras/{id}/ai`: fetches live detections, counts, compliance %, and 5 anomalies.
+    - Added `GET /api/cameras/anomalies/recent`: dashboard-wide recent anomaly feed.
+    - Added `POST /api/cameras/{id}/ai/analyze`: on-demand frame inference trigger.
+    - Broadcasts `CAMERA_AI_UPDATE` and `CAMERA_ANOMALY_ALERT` via `/ws/cameras` WebSocket.
+  - Frontend AI HUD & Live Overlay:
+    - Added live AI Bounding Box overlay in `CameraViewerDrawer.tsx` (Cyan for people, Green for compliant PPE, Flashing Red for violations).
+    - Added AI HUD toggle button (`AI ON/OFF`) and on-demand `Scan` button in drawer player bar.
+    - Added AI Intelligence & PPE Violations panel displaying People count, Phone alerts, PPE alerts, Compliance %, and active 5-anomaly list.
+    - Added AI badge counters in `SurveillanceGridCard.tsx` (`👤 N`, `⚠️ Alerts`).
+    - Added AI status pills in `CameraTable.tsx`.
+    - Verified with backend unit tests (`pytest tests/test_ai_engine.py`) and frontend production build (`npm run build`).
+- Alerts & Evidence Photos Integration with backend/data:
+  - Evidence Storage Structure: Partitioned under `backend/data/evidence/YYYY/MM/DD/<camera_id>/<HH-MM-SS>_<ANOMALY_TYPE>_<EVENT_ID>.jpg` with high-contrast bounding boxes and telemetry headers.
+  - Resolved 401 Unauthorized Pitfall: Made `GET /api/anomalies/{id}/evidence` authentication permissive for browser `<img>` elements and enhanced filesystem resolution to look across root, backend, and current working directory candidates.
+  - Static Mount & Direct Resolution: Verified `http://localhost:5000/data/evidence/...` static mount serving images cleanly (200 OK, image/jpeg).
+  - Fixed `apiFetch` Double Prefix Bug: Corrected `anomalyService.ts` to pass relative paths (e.g. `/anomalies/dates`) to avoid `http://localhost:5000/apihttp://localhost:5000/api/...` 404 errors.
+  - Evidence-First Card Filtering: Added `evidenceOnly` toggle (defaults to `true`), isolating 46 genuine photo violation cards from 200+ empty `PERSON_DETECTED` events.
+  - Enhanced Incident Evidence Cards: Rendered crisp photo proof badge, formatted date (`DD Mon YYYY`), 12-hour timestamp with seconds (`HH:MM:SS AM/PM`), camera name/ID, facility zone, AI confidence %, severity badge, track ID, and inspect modal with zoom controls and on-disk file storage path.
+- Gitignore & Real-Time New Evidence Notification:
+  - Fixed Gitignore: Corrected Windows backslash `backend\data` to POSIX `backend/data/`, `data/`, and `**/evidence/` in root and backend `.gitignore`. Verified via `git check-ignore` (0 evidence files tracked).
+  - Real-time Alert Notification Flow:
+    1. Instant WebSocket Push (`CAMERA_ANOMALY_ALERT`) auto-prepends new evidence card to top of feed in real-time.
+    2. Audio Alert: `soundService.playAlert()` triggers siren/chime.
+    3. Toast Popup: Top/bottom red toast alerts operator with camera name and violation type.
+    4. Glowing Card Pulse: Cards created within last 5 minutes display glowing red pulse ring + flashing `● JUST NOW` badge.
+    5. Navbar Badge: Red `Alerts & Proof` counter in header pulses and increments count.
+  - Active git repository: `https://github.com/deepspsd/cctv_yolo_integrated.git` on branch `master`. All files committed and pushed.

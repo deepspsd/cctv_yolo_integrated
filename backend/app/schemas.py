@@ -116,3 +116,53 @@ class StreamStopRequest(BaseModel):
     session_id: str | None = Field(default=None, alias="sessionId")
     model_config = ConfigDict(populate_by_name=True)
 
+
+class AiCameraConfigResponse(BaseModel):
+    camera_id: str = Field(..., alias="cameraId")
+    enabled: bool
+    inference_fps: int = Field(..., alias="inferenceFps")
+    confidence_threshold: float = Field(..., alias="confidenceThreshold")
+    image_size: int = Field(..., alias="imageSize")
+    enabled_rules: list[str] = Field(..., alias="enabledRules")
+    confirmation_frames: int = Field(..., alias="confirmationFrames")
+    cooldown_seconds: int = Field(..., alias="cooldownSeconds")
+    updated_at: str | None = Field(default=None, alias="updatedAt")
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
+
+
+class AiCameraConfigUpdate(BaseModel):
+    enabled: bool | None = None
+    inference_fps: int | None = Field(default=None, ge=1, le=30, alias="inferenceFps")
+    confidence_threshold: float | None = Field(default=None, ge=0.1, le=1.0, alias="confidenceThreshold")
+    image_size: int | None = Field(default=None, alias="imageSize")
+    enabled_rules: list[str] | None = Field(default=None, alias="enabledRules")
+    confirmation_frames: int | None = Field(default=None, ge=1, le=10, alias="confirmationFrames")
+    cooldown_seconds: int | None = Field(default=None, ge=1, le=120, alias="cooldownSeconds")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AnomalyEventResponse(BaseModel):
+    id: str
+    camera_id: str = Field(..., alias="cameraId")
+    zone: str
+    event_category: str = Field(..., alias="eventCategory")
+    anomaly_type: str = Field(..., alias="anomalyType")
+    model_class_id: int | None = Field(default=None, alias="modelClassId")
+    model_class_name: str | None = Field(default=None, alias="modelClassName")
+    confidence: float
+    track_id: int | None = Field(default=None, alias="trackId")
+    first_seen_at: str = Field(..., alias="firstSeenAt")
+    confirmed_at: str = Field(..., alias="confirmedAt")
+    ended_at: str | None = Field(default=None, alias="endedAt")
+    duration_seconds: float | None = Field(default=None, alias="durationSeconds")
+    camera_name: str | None = Field(default=None, alias="cameraName")
+    severity: str = Field(default="HIGH", alias="severity")
+    status: str
+    snapshot_path: str | None = Field(default=None, alias="snapshotPath")
+    created_at: str = Field(..., alias="createdAt")
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
+
+
+class AnomalyStatusUpdate(BaseModel):
+    status: str = Field(..., description="NEW, REVIEWED, or RESOLVED")
+

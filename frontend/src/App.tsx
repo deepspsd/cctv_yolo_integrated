@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Camera, CameraFormData, CameraStatus, CameraSummary, StatusFilter, Toast, AppView, User } from './types';
+import { Camera, CameraFormData, CameraStatus, CameraSummary, StatusFilter, Toast, AppView, User, AnomalyAlertEvent } from './types';
 import { cameraService, cameraWebSocket } from './services/cameraService';
 import { authService } from './services/authService';
+import { anomalyService } from './services/anomalyService';
 import { Navbar } from './components/Navbar';
 import { LoginPage } from './components/LoginPage';
 import { RegisterPage } from './components/RegisterPage';
+import { AlertsPage } from './components/AlertsPage';
 import { CameraSummaryCards } from './components/CameraSummaryCards';
 import { CameraControls } from './components/CameraControls';
 import { CameraTable } from './components/CameraTable';
@@ -103,6 +105,9 @@ export default function App() {
   // Toasts
   const [toasts, setToasts] = useState<Toast[]>([]);
 
+  // Real-time AI Anomaly Alerts & Evidence Snapshots
+  const [alerts, setAlerts] = useState<AnomalyAlertEvent[]>([]);
+
   const addToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     setToasts((prev) => [...prev, { id, message, type, timestamp: Date.now() }]);
@@ -115,6 +120,17 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  // Fetch Anomaly Alerts & Evidence
+  const loadAlerts = useCallback(async () => {
+    if (!authService.isLoggedIn()) return;
+    try {
+      const data = await anomalyService.getAnomalies({ limit: 500 });
+      setAlerts(data);
+    } catch (err: any) {
+      console.error('Failed to load anomaly alerts:', err);
+    }
+  }, []);
+
   // Fetch Cameras Initial Load — only when authenticated
   const loadCameras = useCallback(async () => {
     if (!authService.isLoggedIn()) return;
@@ -123,6 +139,7 @@ export default function App() {
     try {
       const data = await cameraService.getAllCameras();
       setCameras(data);
+      loadAlerts();
     } catch (err: any) {
       if (err.message?.includes('Session expired')) {
         handleForceLogout();
@@ -132,11 +149,14 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [loadAlerts]);
 
   useEffect(() => {
-    if (authService.isLoggedIn()) loadCameras();
-  }, [loadCameras]);
+    if (authService.isLoggedIn()) {
+      loadCameras();
+      loadAlerts();
+    }
+  }, [loadCameras, loadAlerts]);
 
   // Force logout helper — used by AUTH_EXPIRED and 401 errors
   const handleForceLogout = useCallback(() => {
@@ -186,6 +206,48 @@ export default function App() {
         );
       } else if (event.type === 'CAMERAS_RESET') {
         setCameras(event.payload);
+      } else if (event.type === 'CAMERA_AI_UPDATE') {
+        const aiState = event.payload;
+        setCameras((prev) =>
+          prev.map((cam) =>
+            cam.id === aiState.cameraId ? { ...cam, aiState } : cam
+          )
+        );
+        setSelectedCamera((current) => {
+          if (current && current.id === aiState.cameraId) {
+            return { ...current, aiState };
+          }
+          return current;
+        });
+      } else if (event.type === 'CAMERA_ANOMALY_ALERT') {
+        const raw = event.payload;
+        const newAlert: AnomalyAlertEvent = {
+          id: raw.id || `evt_${Date.now()}`,
+          cameraId: raw.cameraId || raw.camera_id || '',
+          cameraName: raw.cameraName || raw.camera_name || raw.cameraId || raw.camera_id || '',
+          zone: raw.zone || 'General Facility',
+          eventCategory: raw.eventCategory || raw.event_category || 'VIOLATION',
+          anomalyType: raw.anomalyType || raw.anomaly_type || 'ANOMALY',
+          modelClassId: raw.modelClassId ?? raw.model_class_id,
+          modelClassName: raw.modelClassName || raw.model_class_name,
+          confidence: raw.confidence ?? 0.85,
+          severity: raw.severity || (raw.anomaly_type && (raw.anomaly_type.includes('NO_') || raw.anomaly_type.includes('HAZARD')) ? 'HIGH' : 'MEDIUM'),
+          trackId: raw.trackId ?? raw.track_id,
+          firstSeenAt: raw.firstSeenAt || raw.first_seen_at || new Date().toISOString(),
+          confirmedAt: raw.confirmedAt || raw.confirmed_at || raw.timestamp || new Date().toISOString(),
+          endedAt: raw.endedAt || raw.ended_at,
+          durationSeconds: raw.durationSeconds ?? raw.duration_seconds,
+          status: raw.status || 'NEW',
+          snapshotPath: raw.snapshotPath || raw.snapshot_path || null,
+          createdAt: raw.createdAt || raw.created_at || raw.confirmed_at || new Date().toISOString(),
+        };
+
+        soundService.playAlert();
+        setAlerts((prev) => {
+          if (prev.some((a) => a.id === newAlert.id)) return prev;
+          return [newAlert, ...prev];
+        });
+        addToast(`🚨 AI Alert: ${newAlert.anomalyType} on ${newAlert.cameraName}!`, 'error');
       }
     });
 
@@ -468,6 +530,11 @@ export default function App() {
     } else if (section === 'cameras') {
       setCurrentView('cameras');
       handleResetFilters();
+    } else if (section === 'alerts') {
+      setCurrentView('alerts');
+      setIsViewerOpen(false);
+      setSelectedCamera(null);
+      loadAlerts();
     } else {
       setCurrentView('cameras');
       addToast(`Switched context to ${section.toUpperCase()}`, 'info');
@@ -490,6 +557,7 @@ export default function App() {
         activeSection={currentView}
         onlineCount={summary.online}
         totalCount={summary.total}
+        alertCount={alerts.length}
         currentUser={currentUser}
         onSignOut={handleSignOut}
         onNavigate={handleNavigate}
@@ -520,6 +588,17 @@ export default function App() {
             onSuccess={handleRegisterSuccess}
             onNavigateToLogin={() => setCurrentView('login')}
             onBackToConsole={() => setCurrentView('cameras')}
+          />
+        ) : currentView === 'alerts' ? (
+          <AlertsPage
+            alerts={alerts}
+            cameras={cameras}
+            onRefresh={loadAlerts}
+            onStatusUpdate={(id, newStatus) => {
+              setAlerts((prev) =>
+                prev.map((a) => (a.id === id ? { ...a, status: newStatus } : a))
+              );
+            }}
           />
         ) : (
           <>

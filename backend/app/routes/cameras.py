@@ -1,7 +1,9 @@
 import re
 import uuid
+import asyncio
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 
@@ -30,6 +32,7 @@ from app.rtsp_probe import probe_rtsp_lightweight, parse_rtsp_url
 from app.mediamtx import mediamtx_manager
 from app.websocket_manager import ws_manager
 from app.health_manager import health_manager
+from app.ai_engine import ai_engine
 from app.dependencies import get_current_user
 
 # All camera endpoints require a valid JWT Bearer token
@@ -146,6 +149,14 @@ async def get_cameras_summary(db: AsyncSession = Depends(get_db)):
         unknown=unknown,
         active_viewers=active_viewers
     )
+
+@router.get("/anomalies/recent")
+async def get_recent_anomalies(limit: int = 20):
+    """
+    Get latest AI anomalies (PPE violations, phone detections) across all cameras.
+    Strictly capped at max 5 anomalies per camera.
+    """
+    return ai_engine.get_all_recent_anomalies(limit=limit)
 
 @router.post("", response_model=CameraResponse, status_code=status.HTTP_201_CREATED)
 async def create_camera(payload: CameraCreate, db: AsyncSession = Depends(get_db)):
@@ -642,3 +653,87 @@ async def get_camera_status(camera_id: str, db: AsyncSession = Depends(get_db)):
         "bitrate": camera.bitrate,
         "ip": camera.ip
     }
+
+@router.get("/{camera_id}/ai")
+async def get_camera_ai(camera_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Get live AI detection state, people count, phone alerts, and max 5 anomalies for a camera.
+    Prioritizes sampling for actively viewed camera.
+    """
+    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    camera = result.scalar_one_or_none()
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Camera with ID '{camera_id}' not found."
+        )
+
+    ai_engine.set_priority_camera(camera.id, duration_seconds=45)
+    state = ai_engine.get_camera_ai_state(camera.id)
+    if camera.status == CameraStatusEnum.ONLINE and not state.get("detections"):
+        try:
+            state = await ai_engine.analyze_camera_now(camera.id)
+        except Exception as e:
+            logger.debug(f"Immediate frame analysis fallback: {e}")
+    return state
+
+@router.post("/{camera_id}/ai/analyze")
+async def trigger_camera_ai_analysis(camera_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Trigger on-demand instant AI analysis (YOLOv8 + PPE) on a single snapshot frame.
+    Rejected if camera is OFFLINE.
+    """
+    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    camera = result.scalar_one_or_none()
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Camera with ID '{camera_id}' not found."
+        )
+
+    if camera.status == CameraStatusEnum.OFFLINE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Camera '{camera.name}' is OFFLINE. AI analysis is disabled for offline cameras."
+        )
+
+    ai_state = await ai_engine.analyze_camera_now(camera.id)
+    return ai_state
+
+class FrameDetectRequest(BaseModel):
+    image: str
+
+@router.post("/{camera_id}/ai/detect-frame")
+async def detect_camera_frame(
+    camera_id: str,
+    payload: FrameDetectRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Real-time frame inference endpoint.
+    Processes live frame grabbed directly from client browser WebRTC player.
+    Zero RTSP handshake lag, pixel-perfect alignment, real-time feedback.
+    Rejected if camera is OFFLINE.
+    """
+    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    camera = result.scalar_one_or_none()
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Camera with ID '{camera_id}' not found."
+        )
+
+    if camera.status == CameraStatusEnum.OFFLINE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Camera '{camera.name}' is OFFLINE. AI analysis is disabled for offline cameras."
+        )
+
+    loop = asyncio.get_running_loop()
+    ai_state = await loop.run_in_executor(
+        None, ai_engine.process_b64_frame, camera.id, camera.code, payload.image
+    )
+    await ws_manager.broadcast("CAMERA_AI_UPDATE", ai_state)
+    return ai_state
+
+

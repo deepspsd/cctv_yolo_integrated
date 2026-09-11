@@ -33,7 +33,8 @@ class MediaMTXManager:
 
         payload = {
             "source": auth_url,
-            "sourceOnDemand": True,
+            # AI reader is a permanent consumer; browser viewers remain independent.
+            "sourceOnDemand": False,
             "sourceOnDemandStartTimeout": "10s",
             "sourceOnDemandCloseAfter": "10s",
             # Never record by default

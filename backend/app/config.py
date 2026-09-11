@@ -46,6 +46,21 @@ class Settings(BaseSettings):
     STREAM_IDLE_TIMEOUT: int = int(os.getenv("STREAM_IDLE_TIMEOUT", "15"))
     STREAM_SESSION_TIMEOUT: int = int(os.getenv("STREAM_SESSION_TIMEOUT", "60"))
 
+    # AI Inference Configuration
+    AI_MODEL_PATH: str = os.getenv("AI_MODEL_PATH", "./models/ppe.pt")
+    AI_DEFAULT_FPS: int = int(os.getenv("AI_DEFAULT_FPS", "5"))
+    AI_DEFAULT_CONFIDENCE: float = float(os.getenv("AI_DEFAULT_CONFIDENCE", "0.45"))
+    AI_IMAGE_SIZE: int = int(os.getenv("AI_IMAGE_SIZE", "640"))
+    AI_DEVICE: str = os.getenv("AI_DEVICE", "auto")
+    AI_USE_FP16: bool = os.getenv("AI_USE_FP16", "true").lower() in ("true", "1", "yes")
+    AI_BATCH_SIZE: int = int(os.getenv("AI_BATCH_SIZE", "4"))
+    AI_MAX_FRAME_QUEUE: int = int(os.getenv("AI_MAX_FRAME_QUEUE", "2"))
+    AI_CONFIRMATION_FRAMES: int = int(os.getenv("AI_CONFIRMATION_FRAMES", "3"))
+    AI_COOLDOWN_SECONDS: int = int(os.getenv("AI_COOLDOWN_SECONDS", "10"))
+    AI_MAX_CAMERAS: int = int(os.getenv("AI_MAX_CAMERAS", "64"))
+    AI_EVIDENCE_DIR: str = os.getenv("AI_EVIDENCE_DIR", "./data/evidence")
+    AI_MOCK_MODE: bool = os.getenv("AI_MOCK_MODE", "false").lower() in ("true", "1", "yes")
+
     # Development Mock Mode
     CAMERA_MOCK_MODE: bool = os.getenv("CAMERA_MOCK_MODE", "false").lower() in ("true", "1", "yes")
 

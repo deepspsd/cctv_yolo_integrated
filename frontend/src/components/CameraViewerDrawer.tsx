@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, StreamInfo } from '../types';
+import { Camera, StreamInfo, CameraAiState } from '../types';
 import { cameraService, cameraWebSocket, formatFullDateTime, formatRelativeTime } from '../services/cameraService';
 import { soundService } from '../services/soundService';
 import {
@@ -23,6 +23,12 @@ import {
   Clock,
   Play,
   Pause,
+  Cpu,
+  Scan,
+  Smartphone,
+  HardHat,
+  ShieldAlert,
+  Users,
 } from 'lucide-react';
 
 interface CameraViewerDrawerProps {
@@ -48,6 +54,9 @@ export const CameraViewerDrawer: React.FC<CameraViewerDrawerProps> = ({
 }) => {
   const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
   const [liveMetadata, setLiveMetadata] = useState<Camera | null>(camera);
+  const [aiState, setAiState] = useState<CameraAiState | null>(camera?.aiState || null);
+  const [showAiHud, setShowAiHud] = useState<boolean>(true);
+  const [isAnalyzingAi, setIsAnalyzingAi] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isOfflineFailure, setIsOfflineFailure] = useState(false);
@@ -93,6 +102,17 @@ export const CameraViewerDrawer: React.FC<CameraViewerDrawerProps> = ({
         console.warn('Failed to fetch initial real-time camera status:', err);
       });
 
+    // Fetch initial AI detection & anomaly state for this camera
+    cameraService.getCameraAi(camera.id)
+      .then((ai) => {
+        if (isMounted && ai) {
+          setAiState(ai);
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to fetch camera AI status:', err);
+      });
+
     // Subscribe to live WebSocket updates for this camera
     const unsubscribe = cameraWebSocket.subscribe((event) => {
       if (event.type === 'CAMERA_STATUS_UPDATE' && event.payload.id === camera.id) {
@@ -112,6 +132,8 @@ export const CameraViewerDrawer: React.FC<CameraViewerDrawerProps> = ({
             model: event.payload.model || prev.model,
           };
         });
+      } else if (event.type === 'CAMERA_AI_UPDATE' && event.payload.cameraId === camera.id) {
+        setAiState(event.payload);
       }
     });
 
@@ -523,6 +545,20 @@ export const CameraViewerDrawer: React.FC<CameraViewerDrawerProps> = ({
     }
   };
 
+  const handleTriggerAiScan = async () => {
+    if (!effectiveCamera) return;
+    setIsAnalyzingAi(true);
+    soundService.playTactileBlip(880, 0.03);
+    try {
+      const res = await cameraService.triggerCameraAiAnalysis(effectiveCamera.id);
+      if (res) setAiState(res);
+    } catch (e) {
+      console.warn('AI analysis error:', e);
+    } finally {
+      setIsAnalyzingAi(false);
+    }
+  };
+
   if (!isOpen || !camera) {
     return null;
   }
@@ -653,6 +689,77 @@ export const CameraViewerDrawer: React.FC<CameraViewerDrawerProps> = ({
                 !isPlayingWebRtc && !isLoading && !errorMessage ? 'block' : 'hidden'
               }`}
             />
+
+            {/* AI YOLOv8 & PPE Live Bounding Box Overlay */}
+            {showAiHud && aiState && aiState.detections && aiState.detections.length > 0 && !isLoading && (
+              <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden">
+                {aiState.detections.map((det, idx) => {
+                  if (!det.bbox || det.bbox.length !== 4) return null;
+                  const [b0, b1, b2, b3] = det.bbox;
+                  // Support normalized [x1, y1, x2, y2] vs [x, y, w, h]
+                  const isXyxy = b2 > b0 && b3 > b1 && b2 <= 1.05 && b3 <= 1.05;
+                  const left = Math.max(0, Math.min(95, b0 * 100));
+                  const top = Math.max(0, Math.min(95, b1 * 100));
+                  const width = Math.max(3, Math.min(100 - left, isXyxy ? (b2 - b0) * 100 : b2 * 100));
+                  const height = Math.max(3, Math.min(100 - top, isXyxy ? (b3 - b1) * 100 : b3 * 100));
+
+                  const isViolation = det.category === 'VIOLATION';
+                  const isCompliant = det.category === 'COMPLIANT';
+                  
+                  const borderClass = isViolation
+                    ? 'border-red-500 bg-red-500/15 shadow-[0_0_12px_rgba(239,68,68,0.4)] animate-pulse'
+                    : isCompliant
+                    ? 'border-emerald-500 bg-emerald-500/10'
+                    : 'border-cyan-400 bg-cyan-400/10';
+
+                  const badgeClass = isViolation
+                    ? 'bg-red-500 text-white font-bold'
+                    : isCompliant
+                    ? 'bg-emerald-500 text-black font-semibold'
+                    : 'bg-cyan-500 text-black font-semibold';
+
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        left: `${left}%`,
+                        top: `${top}%`,
+                        width: `${width}%`,
+                        height: `${height}%`,
+                      }}
+                      className={`absolute border-2 rounded-xs transition-all duration-300 pointer-events-none ${borderClass}`}
+                    >
+                      <div className={`absolute -top-5 left-0 px-1.5 py-0.5 rounded-xs text-[10px] font-mono whitespace-nowrap shadow-sm flex items-center gap-1 ${badgeClass}`}>
+                        {isViolation && <ShieldAlert className="w-2.5 h-2.5 inline" />}
+                        {det.label} {Math.round(det.confidence * 100)}%
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* AI HUD Status Corner Pill (Top Left Overlay) */}
+            {showAiHud && (
+              <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-black/80 backdrop-blur-xs border border-white/15 text-[11px] text-white font-mono pointer-events-none shadow-md">
+                <Cpu className="w-3 h-3 text-cyan-400 animate-pulse" />
+                <span className="text-cyan-400 font-bold">AI HUD</span>
+                <span className="text-white/30">•</span>
+                <span className="flex items-center gap-1">
+                  <Users className="w-3 h-3 text-white/70" />
+                  {aiState?.peopleCount ?? 0} People
+                </span>
+                {aiState && (aiState.phoneViolations > 0 || aiState.ppeViolations > 0) && (
+                  <>
+                    <span className="text-white/30">•</span>
+                    <span className="text-red-400 font-bold flex items-center gap-1 animate-pulse">
+                      <ShieldAlert className="w-3 h-3 text-red-400" />
+                      {aiState.phoneViolations + aiState.ppeViolations} Violations
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* Connecting / Loading State */}
             {isLoading && (
@@ -816,6 +923,38 @@ export const CameraViewerDrawer: React.FC<CameraViewerDrawerProps> = ({
 
             {/* Quick Action Tools with Hotkey hints */}
             <div className="flex items-center gap-1">
+              {/* AI HUD / YOLO Vision Toggle */}
+              <button
+                type="button"
+                onClick={() => {
+                  soundService.playTactileBlip(700, 0.02);
+                  setShowAiHud((prev) => !prev);
+                }}
+                className={`px-2 py-1 rounded text-[11px] font-mono flex items-center gap-1 border transition-all cursor-pointer ${
+                  showAiHud
+                    ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-400 font-bold shadow-xs'
+                    : 'border-black/[0.08] dark:border-white/[0.08] text-[#8c8c8c] dark:text-[#71717a] hover:text-black dark:hover:text-white'
+                }`}
+                title="Toggle AI YOLOv8 & PPE Live Bounding Box HUD"
+              >
+                <Cpu className={`w-3.5 h-3.5 ${showAiHud ? 'text-cyan-400 animate-pulse' : ''}`} />
+                <span>AI {showAiHud ? 'ON' : 'OFF'}</span>
+              </button>
+
+              {/* On-Demand AI Frame Scan */}
+              <button
+                type="button"
+                onClick={handleTriggerAiScan}
+                disabled={isAnalyzingAi}
+                className="px-2 py-1 rounded hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-[#6b6b6b] dark:text-[#a1a1aa] hover:text-cyan-400 transition-colors cursor-pointer text-[11px] font-mono flex items-center gap-1 border border-black/[0.06] dark:border-white/[0.08] disabled:opacity-50"
+                title="Run immediate dual YOLO & PPE AI frame inference"
+              >
+                <Scan className={`w-3.5 h-3.5 ${isAnalyzingAi ? 'animate-spin text-cyan-400' : ''}`} />
+                <span>{isAnalyzingAi ? 'Scanning...' : 'Scan'}</span>
+              </button>
+
+              <div className="w-[1px] h-3.5 bg-black/10 dark:bg-white/10 mx-0.5" />
+
               <button
                 type="button"
                 onClick={() => setAspectRatio((a) => (a === '16:9' ? '4:3' : a === '4:3' ? 'fill' : '16:9'))}
@@ -862,6 +1001,111 @@ export const CameraViewerDrawer: React.FC<CameraViewerDrawerProps> = ({
               >
                 <Maximize2 className="w-4 h-4" />
               </button>
+            </div>
+          </div>
+
+          {/* AI SURVEILLANCE & ANOMALY MONITOR (MAX 5) */}
+          <div className="space-y-3 pt-1">
+            <div className="flex items-center justify-between">
+              <h4 className="font-semibold tracking-tight uppercase tracking-wider text-[11px] text-[#8c8c8c] dark:text-[#71717a] flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+                AI Intelligence & PPE Violations
+              </h4>
+              <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                YOLOv8 + PPE Models
+              </span>
+            </div>
+
+            {/* AI Telemetry Metrics */}
+            <div className="grid grid-cols-4 gap-2 text-[12px]">
+              <div className="p-2.5 bg-[#fbfbfb] dark:bg-[#15151b] border border-black/[0.06] dark:border-white/[0.08] rounded-lg">
+                <span className="text-[#8c8c8c] dark:text-[#71717a] block text-[10.5px] uppercase font-mono">People</span>
+                <span className="font-mono text-[16px] font-bold text-[#0a0a0a] dark:text-white flex items-center gap-1">
+                  <Users className="w-4 h-4 text-cyan-400" />
+                  {aiState?.peopleCount ?? 0}
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-[#fbfbfb] dark:bg-[#15151b] border border-black/[0.06] dark:border-white/[0.08] rounded-lg">
+                <span className="text-[#8c8c8c] dark:text-[#71717a] block text-[10.5px] uppercase font-mono">Phone Alert</span>
+                <span className={`font-mono text-[16px] font-bold flex items-center gap-1 ${
+                  (aiState?.phoneViolations ?? 0) > 0 ? 'text-red-500' : 'text-emerald-500'
+                }`}>
+                  <Smartphone className="w-4 h-4" />
+                  {aiState?.phoneViolations ?? 0}
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-[#fbfbfb] dark:bg-[#15151b] border border-black/[0.06] dark:border-white/[0.08] rounded-lg">
+                <span className="text-[#8c8c8c] dark:text-[#71717a] block text-[10.5px] uppercase font-mono">PPE Alert</span>
+                <span className={`font-mono text-[16px] font-bold flex items-center gap-1 ${
+                  (aiState?.ppeViolations ?? 0) > 0 ? 'text-amber-500' : 'text-emerald-500'
+                }`}>
+                  <HardHat className="w-4 h-4" />
+                  {aiState?.ppeViolations ?? 0}
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-[#fbfbfb] dark:bg-[#15151b] border border-black/[0.06] dark:border-white/[0.08] rounded-lg">
+                <span className="text-[#8c8c8c] dark:text-[#71717a] block text-[10.5px] uppercase font-mono">Compliance</span>
+                <span className="font-mono text-[16px] font-bold text-emerald-500">
+                  {aiState?.complianceScore ?? 100}%
+                </span>
+              </div>
+            </div>
+
+            {/* Active Anomalies List (Capped strictly at max 5) */}
+            <div className="p-3 bg-[#fbfbfb] dark:bg-[#15151b] border border-black/[0.06] dark:border-white/[0.08] rounded-xl space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-[#8c8c8c] dark:text-[#71717a] flex items-center gap-1">
+                  <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
+                  Recent Anomalies (Max 5)
+                </span>
+                <span className="text-[10px] font-mono text-[#8c8c8c] dark:text-[#71717a]">
+                  {aiState?.anomalies ? `${aiState.anomalies.length}/5 Logged` : '0/5'}
+                </span>
+              </div>
+
+              {aiState?.anomalies && aiState.anomalies.length > 0 ? (
+                <div className="space-y-1.5">
+                  {aiState.anomalies.slice(0, 5).map((anom) => (
+                    <div
+                      key={anom.id}
+                      className="p-2 rounded-lg bg-white dark:bg-[#1a1a24] border border-black/[0.06] dark:border-white/[0.08] flex items-center justify-between text-[11.5px]"
+                    >
+                      <div className="flex items-center gap-2 min-w-0 pr-2">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                            anom.severity === 'HIGH' ? 'bg-red-500 animate-ping' : 'bg-amber-500'
+                          }`}
+                        />
+                        <span className="font-medium text-[#0a0a0a] dark:text-white truncate">
+                          {anom.label}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-mono text-[10px] text-[#8c8c8c] dark:text-[#71717a]">
+                          {formatRelativeTime(anom.timestamp)}
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold uppercase tracking-tight ${
+                            anom.severity === 'HIGH'
+                              ? 'bg-red-500/15 text-red-400 border border-red-500/30'
+                              : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                          }`}
+                        >
+                          {anom.severity}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-2.5 px-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[11.5px] flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 shrink-0" />
+                  <span>Zero Anomalies Detected • Normal Surveillance Protocol</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1002,29 +1246,78 @@ export const CameraViewerDrawer: React.FC<CameraViewerDrawerProps> = ({
               <div className="absolute inset-0 bg-white animate-camera-flash pointer-events-none z-30" />
             )}
 
-            {/* If WebRTC video is playing */}
-            {isPlayingWebRtc ? (
-              <video
-                ref={(el) => {
-                  if (el && videoRef.current && videoRef.current.srcObject) {
-                    el.srcObject = videoRef.current.srcObject;
-                    el.play().catch(() => {});
-                  }
-                }}
-                autoPlay
-                playsInline
-                muted={isMuted}
-                className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-              />
-            ) : (
-              /* Fullscreen High-Definition Canvas */
-              <canvas
-                ref={fullscreenCanvasRef}
-                width={1920}
-                height={1080}
-                className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-              />
-            )}
+            <div className="relative max-w-full max-h-full aspect-video flex items-center justify-center">
+              {/* If WebRTC video is playing */}
+              {isPlayingWebRtc ? (
+                <video
+                  ref={(el) => {
+                    if (el && videoRef.current && videoRef.current.srcObject) {
+                      el.srcObject = videoRef.current.srcObject;
+                      el.play().catch(() => {});
+                    }
+                  }}
+                  autoPlay
+                  playsInline
+                  muted={isMuted}
+                  className="w-full h-full object-contain rounded-lg shadow-2xl"
+                />
+              ) : (
+                /* Fullscreen High-Definition Canvas */
+                <canvas
+                  ref={fullscreenCanvasRef}
+                  width={1920}
+                  height={1080}
+                  className="w-full h-full object-contain rounded-lg shadow-2xl"
+                />
+              )}
+
+              {/* Fullscreen AI Overlay */}
+              {showAiHud && aiState && aiState.detections && aiState.detections.length > 0 && (
+                <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden">
+                  {aiState.detections.map((det, idx) => {
+                    if (!det.bbox || det.bbox.length !== 4) return null;
+                    const [b0, b1, b2, b3] = det.bbox;
+                    const isXyxy = b2 > b0 && b3 > b1 && b2 <= 1.05 && b3 <= 1.05;
+                    const left = Math.max(0, Math.min(95, b0 * 100));
+                    const top = Math.max(0, Math.min(95, b1 * 100));
+                    const width = Math.max(3, Math.min(100 - left, isXyxy ? (b2 - b0) * 100 : b2 * 100));
+                    const height = Math.max(3, Math.min(100 - top, isXyxy ? (b3 - b1) * 100 : b3 * 100));
+
+                    const isViolation = det.category === 'VIOLATION';
+                    const isCompliant = det.category === 'COMPLIANT';
+                    const borderClass = isViolation
+                      ? 'border-red-500 bg-red-500/15 shadow-[0_0_14px_rgba(239,68,68,0.5)] animate-pulse'
+                      : isCompliant
+                      ? 'border-emerald-500 bg-emerald-500/10'
+                      : 'border-cyan-400 bg-cyan-400/10';
+
+                    const badgeClass = isViolation
+                      ? 'bg-red-500 text-white font-bold'
+                      : isCompliant
+                      ? 'bg-emerald-500 text-black font-semibold'
+                      : 'bg-cyan-500 text-black font-semibold';
+
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          left: `${left}%`,
+                          top: `${top}%`,
+                          width: `${width}%`,
+                          height: `${height}%`,
+                        }}
+                        className={`absolute border-2 rounded-xs transition-all duration-300 pointer-events-none ${borderClass}`}
+                      >
+                        <div className={`absolute -top-6 left-0 px-2 py-0.5 rounded-xs text-[11px] font-mono whitespace-nowrap shadow-md flex items-center gap-1.5 ${badgeClass}`}>
+                          {isViolation && <ShieldAlert className="w-3 h-3 inline" />}
+                          {det.label} {Math.round(det.confidence * 100)}%
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Bottom Theater Footer */}

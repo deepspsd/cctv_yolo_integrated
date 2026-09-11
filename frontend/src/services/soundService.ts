@@ -117,6 +117,35 @@ class SoundService {
       // Ignore
     }
   }
+
+  /**
+   * Tactical high-priority audio chime for anomaly / security violations
+   */
+  public playAlert() {
+    if (!this.soundEnabled) return;
+    try {
+      const ctx = this.initCtx();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+
+      // Two-tone warning alert chime (880Hz -> 1174Hz)
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.setValueAtTime(1174, now + 0.08);
+
+      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.25);
+    } catch {
+      // Ignore audio restrictions
+    }
+  }
 }
 
 export const soundService = new SoundService();

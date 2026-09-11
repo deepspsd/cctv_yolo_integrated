@@ -15,6 +15,8 @@ import {
   ChevronDown,
   Activity,
   Shield,
+  Users,
+  ShieldAlert,
 } from 'lucide-react';
 
 interface CameraTableProps {
@@ -350,14 +352,36 @@ export const CameraTable: React.FC<CameraTableProps> = ({
 
                   {/* 4. Status */}
                   <td className={`${rowPadding} px-2 align-middle overflow-hidden`}>
-                    <CameraStatusBadge
-                      status={camera.status}
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelectCamera(camera);
-                      }}
-                    />
+                    <div className="flex flex-col gap-1 items-start">
+                      <CameraStatusBadge
+                        status={camera.status}
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectCamera(camera);
+                        }}
+                      />
+                      {camera.aiState && (
+                        <div className="flex items-center gap-1 font-mono text-[9.5px]">
+                          <span
+                            className="text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-1 py-0.5 rounded flex items-center gap-0.5"
+                            title={`AI Count: ${camera.aiState.peopleCount} People Detected`}
+                          >
+                            <Users className="w-2.5 h-2.5" />
+                            {camera.aiState.peopleCount}
+                          </span>
+                          {camera.aiState.anomalies.length > 0 && (
+                            <span
+                              className="text-red-400 bg-red-500/10 border border-red-500/20 px-1 py-0.5 rounded flex items-center gap-0.5 animate-pulse font-bold"
+                              title={`${camera.aiState.anomalies.length} Anomaly Alerts`}
+                            >
+                              <ShieldAlert className="w-2.5 h-2.5" />
+                              {camera.aiState.anomalies.length}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </td>
 
                   {/* 5. Last Checked */}

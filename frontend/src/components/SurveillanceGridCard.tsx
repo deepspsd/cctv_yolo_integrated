@@ -12,6 +12,8 @@ import {
   Activity,
   Shield,
   Eye,
+  Users,
+  ShieldAlert,
 } from 'lucide-react';
 
 interface SurveillanceGridCardProps {
@@ -264,6 +266,18 @@ export const SurveillanceGridCard: React.FC<SurveillanceGridCardProps> = ({
           <span className="px-2 py-0.5 rounded text-[10.5px] font-mono font-bold bg-black/80 text-white backdrop-blur-md border border-white/15 shadow-xs">
             {cam.code}
           </span>
+          {cam.aiState && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 backdrop-blur-md flex items-center gap-1">
+              <Users className="w-2.5 h-2.5" />
+              {cam.aiState.peopleCount}
+            </span>
+          )}
+          {cam.aiState && (cam.aiState.phoneViolations > 0 || cam.aiState.ppeViolations > 0) && (
+            <span className="px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold bg-red-600/90 text-white backdrop-blur-md flex items-center gap-1 shadow-xs animate-pulse">
+              <ShieldAlert className="w-2.5 h-2.5" />
+              {cam.aiState.phoneViolations + cam.aiState.ppeViolations} ALERTS
+            </span>
+          )}
           {isPlayingWebRtc && (
             <span className="px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold bg-red-600 text-white flex items-center gap-1 shadow-xs animate-pulse">
               <span className="w-1.5 h-1.5 rounded-full bg-white" />

@@ -45,7 +45,7 @@ function storeUser(user: User): void {
 
 let refreshPromise: Promise<boolean> | null = null;
 
-async function tryRefreshToken(): Promise<boolean> {
+export async function tryRefreshToken(): Promise<boolean> {
   const refreshToken = getStoredRefreshToken();
   if (!refreshToken) return false;
 

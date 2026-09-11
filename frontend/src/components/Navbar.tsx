@@ -5,6 +5,7 @@ import {
   X,
   Activity,
   Shield,
+  ShieldAlert,
   Video,
   Layers,
   Database,
@@ -28,6 +29,7 @@ interface NavbarProps {
   onNavigate?: (section: AppView | string) => void;
   onlineCount?: number;
   totalCount?: number;
+  alertCount?: number;
   currentUser?: User | null;
   onSignOut?: () => void;
   isDark?: boolean;
@@ -42,6 +44,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onNavigate,
   onlineCount = 19,
   totalCount = 22,
+  alertCount = 0,
   currentUser,
   onSignOut,
   isDark = true,
@@ -141,6 +144,30 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Right Action Stack */}
           <div className="flex items-center gap-2.5 sm:gap-3">
+            {/* Direct Quick Link to AI Alerts & Proof Gallery */}
+            <button
+              id="header-alerts-btn"
+              type="button"
+              onClick={() => {
+                soundService.playTactileBlip(850, 0.02);
+                handleLinkClick('alerts');
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[12px] font-medium transition-all cursor-pointer ${
+                activeSection === 'alerts'
+                  ? 'border-red-500/50 bg-red-500/15 text-red-400 shadow-[0_0_12px_rgba(239,68,68,0.25)]'
+                  : 'border-red-500/30 bg-red-950/20 text-red-400 hover:border-red-500/60'
+              }`}
+              title="View Real-Time AI Alerts & Proof Gallery"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-red-400 animate-pulse" />
+              <span className="font-semibold">Alerts & Proof</span>
+              {alertCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-500 text-white leading-none">
+                  {alertCount}
+                </span>
+              )}
+            </button>
+
             {/* Live Socket Telemetry Indicator (Click to open Gateway Diagnostics) */}
             <button
               id="telemetry-pill"
@@ -478,15 +505,14 @@ export const Navbar: React.FC<NavbarProps> = ({
             Platform Navigation • Control Center
           </p>
           <nav className="flex flex-col divide-y divide-black/[0.05] dark:divide-white/[0.06] border-y border-black/[0.05] dark:border-white/[0.06]">
-            {/* Custom nav items including Login and Register */}
+            {/* Custom nav items including AI Alerts at the starting position */}
             {[
+              { id: 'alerts', label: 'AI Alerts & Proof Gallery', icon: ShieldAlert },
               { id: 'cameras', label: 'Camera Management', icon: Video },
-              { id: 'login', label: 'Sign In (Terminal Auth)', icon: LogIn },
-              { id: 'register', label: 'Register Operator', icon: UserPlus },
               { id: 'zones', label: 'Zones & Facilities', icon: Layers },
               { id: 'gateway', label: 'RTSP Stream Gateway', icon: Activity },
               { id: 'storage', label: 'Storage & Retention', icon: Database, comingSoon: true },
-              { id: 'logs', label: 'Audit Logs', icon: FileText, comingSoon: true },
+              { id: 'settings', label: 'Settings', icon: Sliders, comingSoon: true },
             ].map((link, idx) => {
               const Icon = link.icon;
               const isSelected = activeSection === link.id;

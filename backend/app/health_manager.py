@@ -135,6 +135,13 @@ class CameraHealthManager:
                 cam.last_error = probe_result.get("error") or probe_result.get("details", "Live feed unavailable")
                 cam.status = CameraStatusEnum.OFFLINE
 
+            # Immediately synchronize AI scheduler status: stop inference & RTSP capture for offline cameras
+            try:
+                from app.ai_engine import ai_engine
+                ai_engine.scheduler.set_camera_status(cam.id, is_online)
+            except Exception as e:
+                logger.debug(f"Could not update AI scheduler camera status: {e}")
+
             await db.commit()
             await db.refresh(cam)
 
