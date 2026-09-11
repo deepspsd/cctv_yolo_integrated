@@ -1,0 +1,36 @@
+# MediaMTX Configuration for CCTV Priya Textiles
+# Optimized for On-Demand RTSP -> WebRTC (WHEP) streaming
+
+logLevel: info
+logDestinations: [stdout]
+
+# RTSP Server
+rtsp: yes
+protocols: [tcp]
+rtspAddress: :8554
+
+# RTMP Server
+rtmp: no
+
+# HLS Server (fallback)
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+
+# WebRTC Server (Primary low latency browser player)
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: no
+
+# API Server for dynamic camera path registration
+api: yes
+apiAddress: :9997
+
+# Dynamic Paths Template
+paths:
+  # On-demand camera path rule
+  camera/~^(.+)$:
+    sourceOnDemand: yes
+    sourceOnDemandStartTimeout: 10s
+    sourceOnDemandCloseAfter: 10s
+    maxReaders: 50

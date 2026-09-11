@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# uv
+.uv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Database (runtime)
+*.db
+*.sqlite
+*.sqlite3
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Type checkers
+.mypy_cache/
+.pyright/
+
+# MediaMTX runtime
+recordings/
+hls/
+
+# Logs
+*.log

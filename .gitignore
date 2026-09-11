@@ -1,0 +1,159 @@
+# ═══════════════════════════════════════════════════════════════
+#  CCTV Priya Textiles — Monorepo .gitignore
+# ═══════════════════════════════════════════════════════════════
+
+# ─── Secrets & Credentials ───────────────────────────────────────
+.env
+.env.*
+!.env.example
+!backend/.env.example
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# ─── Python / FastAPI Backend ────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments (uv / venv / poetry)
+.venv/
+venv/
+ENV/
+env/
+
+# uv lock & cache (lock IS committed, cache is not)
+.uv/
+uv-cache/
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+*.py,cover
+
+# mypy / pyright
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyright/
+pyrightconfig.json
+
+# SQLite databases (runtime data)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+data/*.db*
+
+# ─── Node.js / React Frontend ────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Build output
+frontend/dist/
+frontend/build/
+frontend/.vite/
+
+# TypeScript incremental build
+*.tsbuildinfo
+
+# Vite
+dist-ssr/
+
+# Testing
+coverage/
+
+# ─── Logs ────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ─── OS / Editor Noise ───────────────────────────────────────────
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# VSCode (keep workspace settings, ignore local overrides)
+.vscode/settings.json
+.vscode/launch.json
+.vscode/*.code-snippets
+!.vscode/extensions.json
+
+# JetBrains / PyCharm / WebStorm
+.idea/
+*.iml
+*.iws
+
+# Vim / Emacs
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+
+# ─── Docker ──────────────────────────────────────────────────────
+# Uncomment if you add Docker
+# .dockerignore
+
+# ─── MediaMTX ────────────────────────────────────────────────────
+# Runtime HLS/record segments, binary executable, and auto-generated TLS certs
+backend/recordings/
+backend/hls/
+backend/mediamtx/
+*.exe
+
+# ─── Misc ────────────────────────────────────────────────────────
+*.bak
+*.tmp
+*.orig
+.cache/
+memory.md
+.git_backup_old/
