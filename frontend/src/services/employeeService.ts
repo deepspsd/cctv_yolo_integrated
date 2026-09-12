@@ -26,7 +26,19 @@ export interface EnrollmentResult {
   message: string;
 }
 
+const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:5000/api';
+
+export const getEmployeePhotoUrl = (id: string, pose: string = 'FRONTAL'): string => {
+  const token = localStorage.getItem('token');
+  const qs = token
+    ? `?token=${encodeURIComponent(token)}&pose=${encodeURIComponent(pose)}`
+    : `?pose=${encodeURIComponent(pose)}`;
+  return `${API_BASE_URL}/employees/${id}/photo${qs}`;
+};
+
 export const employeeService = {
+  getEmployeePhotoUrl,
+
   async getEmployees(params?: { department?: string; activeOnly?: boolean; search?: string }): Promise<Employee[]> {
     const qs = new URLSearchParams();
     if (params?.department && params.department !== 'ALL') qs.append('department', params.department);
@@ -37,36 +49,47 @@ export const employeeService = {
     const res = await apiFetch(`/employees${query ? `?${query}` : ''}`);
     if (!res.ok) throw new Error(`Failed to load employees: ${res.statusText}`);
     const data = await res.json();
-    return (data || []).map((raw: any) => ({
-      id: raw.id,
-      employeeCode: raw.employeeCode || raw.employee_code || '',
-      fullName: raw.fullName || raw.name || 'Unknown Staff',
-      department: raw.department || 'Production',
-      designation: raw.designation || raw.role || 'Staff',
-      avatarUrl: raw.avatarUrl || null,
-      isActive: raw.isActive !== undefined ? raw.isActive : (raw.active !== undefined ? raw.active : true),
-      notes: raw.notes || null,
-      faceTemplatesCount: raw.faceTemplatesCount || raw.templateCount || 0,
-      bodyTemplatesCount: raw.bodyTemplatesCount || 0,
-      createdAt: raw.createdAt || raw.created_at || new Date().toISOString(),
-      updatedAt: raw.updatedAt || raw.updated_at || new Date().toISOString(),
-    }));
+    return (data || []).map((raw: any) => {
+      const id = raw.id;
+      const faceCount = raw.faceTemplatesCount || raw.templateCount || 0;
+      const hasPhoto = raw.hasPhoto || faceCount > 0;
+      const avatarUrl = raw.avatarUrl || (hasPhoto ? getEmployeePhotoUrl(id, 'FRONTAL') : null);
+
+      return {
+        id,
+        employeeCode: raw.employeeCode || raw.employee_code || '',
+        fullName: raw.fullName || raw.name || 'Unknown Staff',
+        department: raw.department || 'Production',
+        designation: raw.designation || raw.role || 'Staff',
+        avatarUrl,
+        isActive: raw.isActive !== undefined ? raw.isActive : (raw.active !== undefined ? raw.active : true),
+        notes: raw.notes || null,
+        faceTemplatesCount: faceCount,
+        bodyTemplatesCount: raw.bodyTemplatesCount || 0,
+        createdAt: raw.createdAt || raw.created_at || new Date().toISOString(),
+        updatedAt: raw.updatedAt || raw.updated_at || new Date().toISOString(),
+      };
+    });
   },
 
   async getEmployee(id: string): Promise<Employee> {
     const res = await apiFetch(`/employees/${id}`);
     if (!res.ok) throw new Error(`Failed to get employee details: ${res.statusText}`);
     const raw = await res.json();
+    const faceCount = raw.faceTemplatesCount || raw.templateCount || 0;
+    const hasPhoto = raw.hasPhoto || faceCount > 0;
+    const avatarUrl = raw.avatarUrl || (hasPhoto ? getEmployeePhotoUrl(raw.id, 'FRONTAL') : null);
+
     return {
       id: raw.id,
       employeeCode: raw.employeeCode || raw.employee_code || '',
       fullName: raw.fullName || raw.name || 'Unknown Staff',
       department: raw.department || 'Production',
       designation: raw.designation || raw.role || 'Staff',
-      avatarUrl: raw.avatarUrl || null,
+      avatarUrl,
       isActive: raw.isActive !== undefined ? raw.isActive : (raw.active !== undefined ? raw.active : true),
       notes: raw.notes || null,
-      faceTemplatesCount: raw.faceTemplatesCount || raw.templateCount || 0,
+      faceTemplatesCount: faceCount,
       bodyTemplatesCount: raw.bodyTemplatesCount || 0,
       createdAt: raw.createdAt || raw.created_at || new Date().toISOString(),
       updatedAt: raw.updatedAt || raw.updated_at || new Date().toISOString(),

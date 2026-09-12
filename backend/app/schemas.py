@@ -198,6 +198,8 @@ class EmployeeResponse(EmployeeBase):
     created_at: str = Field(..., alias="createdAt")
     updated_at: str = Field(..., alias="updatedAt")
     template_count: int = Field(default=0, alias="templateCount")
+    has_photo: bool = Field(default=False, alias="hasPhoto")
+    avatar_url: str | None = Field(default=None, alias="avatarUrl")
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
 

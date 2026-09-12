@@ -51,6 +51,20 @@ async def lifespan(app: FastAPI):
                 admin_id = row[0]
                 cursor.execute("UPDATE cameras SET user_id = ? WHERE user_id IS NULL", (admin_id,))
 
+            # Ensure encrypted_image column exists on face_templates
+            cursor.execute("PRAGMA table_info(face_templates)")
+            face_cols = [row[1] for row in cursor.fetchall()]
+            if "encrypted_image" not in face_cols:
+                logger.info("Migrating face_templates table: adding encrypted_image column...")
+                cursor.execute("ALTER TABLE face_templates ADD COLUMN encrypted_image BLOB")
+
+            # Ensure encrypted_image column exists on body_templates
+            cursor.execute("PRAGMA table_info(body_templates)")
+            body_cols = [row[1] for row in cursor.fetchall()]
+            if "encrypted_image" not in body_cols:
+                logger.info("Migrating body_templates table: adding encrypted_image column...")
+                cursor.execute("ALTER TABLE body_templates ADD COLUMN encrypted_image BLOB")
+
         await conn.run_sync(_migrate_db)
 
     async with AsyncSessionLocal() as db:

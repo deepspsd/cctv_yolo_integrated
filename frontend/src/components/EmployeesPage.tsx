@@ -323,10 +323,27 @@ export const EmployeesPage: React.FC = () => {
                 key={emp.id}
                 className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-white dark:bg-[#111116] border-black/[0.08] dark:border-white/[0.08] hover:border-orange-500/50 dark:hover:border-orange-500/50 shadow-xs hover:shadow-xl dark:hover:shadow-[0_8px_30px_rgba(0,0,0,0.8)] transition-all duration-200"
               >
-                {/* Visual Viewport Header with CCTV scanlines */}
+                {/* Visual Viewport Header with CCTV scanlines & Frontal Face */}
                 <div className="relative aspect-video w-full overflow-hidden bg-black flex flex-col justify-between p-3 select-none">
+                  {/* Frontal Face Photo (Decrypted from DB) */}
+                  {emp.avatarUrl ? (
+                    <img
+                      src={emp.avatarUrl}
+                      alt={emp.fullName}
+                      className="absolute inset-0 w-full h-full object-cover object-top filter brightness-[0.92] contrast-[1.08] group-hover:scale-105 transition-transform duration-300"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none';
+                        const fallback = e.currentTarget.parentElement?.querySelector('.avatar-fallback') as HTMLElement;
+                        if (fallback) fallback.style.display = 'flex';
+                      }}
+                    />
+                  ) : null}
+
+                  {/* Gradient vignettes for text contrast */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-black/75 pointer-events-none z-10" />
+
                   {/* Subtle CCTV scanline backdrop */}
-                  <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.4)_50%)] bg-[length:100%_4px] pointer-events-none z-10 opacity-60" />
+                  <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.4)_50%)] bg-[length:100%_4px] pointer-events-none z-10 opacity-50" />
 
                   {/* Top Badges */}
                   <div className="relative z-20 flex items-center justify-between gap-1.5">
@@ -360,11 +377,24 @@ export const EmployeesPage: React.FC = () => {
                     </span>
                   </div>
 
-                  {/* Centered Avatar Display inside Screen */}
+                  {/* Center HUD / Avatar fallback */}
                   <div className="relative z-20 flex flex-col items-center justify-center py-2">
-                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#1a1a24] to-[#0c0c10] border border-white/20 text-orange-400 font-bold font-mono text-lg flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform duration-200">
+                    {/* Fallback initials when photo is not uploaded */}
+                    <div
+                      className={`avatar-fallback w-14 h-14 rounded-2xl bg-gradient-to-br from-[#1a1a24] to-[#0c0c10] border border-white/20 text-orange-400 font-bold font-mono text-lg items-center justify-center shadow-lg group-hover:scale-105 transition-transform duration-200 ${
+                        emp.avatarUrl ? 'hidden' : 'flex'
+                      }`}
+                    >
                       {initials}
                     </div>
+
+                    {/* Frontal ID Indicator when photo is loaded */}
+                    {emp.avatarUrl && (
+                      <span className="px-2 py-0.5 rounded-md bg-black/75 border border-cyan-500/40 text-cyan-300 text-[9.5px] font-mono backdrop-blur-md flex items-center gap-1 shadow-xs">
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                        <span>FRONTAL VIEW</span>
+                      </span>
+                    )}
                   </div>
 
                   {/* Quick Action Overlay on Hover */}

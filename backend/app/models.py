@@ -138,6 +138,7 @@ class FaceTemplate(Base):
     camera_id = Column(String(64), nullable=True)
     pose = Column(String(32), default="frontal", nullable=False)  # frontal, left, right, profile_left, profile_right, upward, downward
     resolution = Column(String(32), nullable=True, default="112x112")
+    encrypted_image = Column(LargeBinary, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
     employee = relationship("Employee", back_populates="face_templates")
@@ -153,6 +154,7 @@ class BodyTemplate(Base):
     quality_score = Column(Float, default=1.0, nullable=False)
     camera_id = Column(String(64), nullable=True)
     source = Column(String(64), default="cctv_verified", nullable=False)
+    encrypted_image = Column(LargeBinary, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
     employee = relationship("Employee", back_populates="body_templates")

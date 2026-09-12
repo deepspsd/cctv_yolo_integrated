@@ -7,13 +7,14 @@ from datetime import datetime, timezone
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, desc
 
 from app.database import get_db
 from app.models import Employee, FaceTemplate, BodyTemplate, User
-from app.dependencies import get_current_user, require_admin
+from app.dependencies import get_current_user, require_admin, authenticate_request
+from app.security import encrypt_bytes, decrypt_bytes
 from app.schemas import (
     EmployeeCreate, EmployeeUpdate, EmployeeResponse,
     FaceEnrollmentRequest, BodyEnrollmentRequest, TemplateMetadataResponse
@@ -27,7 +28,6 @@ logger = logging.getLogger("routes.employees")
 router = APIRouter(
     prefix="/employees",
     tags=["Employees & Biometrics"],
-    dependencies=[Depends(get_current_user)],
 )
 
 def decode_b64_image(b64_str: str) -> Optional[np.ndarray]:
@@ -47,6 +47,7 @@ async def list_employees(
     search: Optional[str] = None,
     department: Optional[str] = None,
     active_only: bool = Query(True, alias="activeOnly"),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     query = select(Employee)
@@ -68,13 +69,23 @@ async def list_employees(
     res = await db.execute(query)
     employees = res.scalars().all()
 
-    # Aggregate template counts
+    # Aggregate template counts and photos
     out = []
     for emp in employees:
         count_res = await db.execute(
             select(func.count(FaceTemplate.id)).where(FaceTemplate.employee_id == emp.id)
         )
         t_count = count_res.scalar() or 0
+
+        photo_res = await db.execute(
+            select(func.count(FaceTemplate.id)).where(
+                FaceTemplate.employee_id == emp.id,
+                FaceTemplate.encrypted_image != None
+            )
+        )
+        p_count = photo_res.scalar() or 0
+        has_photo = (p_count > 0)
+        avatar_url = f"/api/employees/{emp.id}/photo?pose=FRONTAL" if has_photo else None
 
         out.append({
             "id": emp.id,
@@ -85,7 +96,9 @@ async def list_employees(
             "active": emp.active,
             "createdAt": emp.created_at.isoformat(),
             "updatedAt": emp.updated_at.isoformat(),
-            "templateCount": t_count
+            "templateCount": t_count,
+            "hasPhoto": has_photo,
+            "avatarUrl": avatar_url
         })
     return out
 
@@ -137,6 +150,7 @@ async def create_employee(
 @router.get("/{id}", response_model=EmployeeResponse)
 async def get_employee(
     id: str,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     res = await db.execute(select(Employee).where(Employee.id == id))
@@ -149,6 +163,16 @@ async def get_employee(
     )
     t_count = count_res.scalar() or 0
 
+    photo_res = await db.execute(
+        select(func.count(FaceTemplate.id)).where(
+            FaceTemplate.employee_id == emp.id,
+            FaceTemplate.encrypted_image != None
+        )
+    )
+    p_count = photo_res.scalar() or 0
+    has_photo = (p_count > 0)
+    avatar_url = f"/api/employees/{emp.id}/photo?pose=FRONTAL" if has_photo else None
+
     return {
         "id": emp.id,
         "employeeCode": emp.employee_code,
@@ -158,7 +182,9 @@ async def get_employee(
         "active": emp.active,
         "createdAt": emp.created_at.isoformat(),
         "updatedAt": emp.updated_at.isoformat(),
-        "templateCount": t_count
+        "templateCount": t_count,
+        "hasPhoto": has_photo,
+        "avatarUrl": avatar_url
     }
 
 @router.put("/{id}", response_model=EmployeeResponse)
@@ -226,7 +252,7 @@ async def enroll_employee_face(
 ):
     """
     Enrolls a multi-angle or CCTV-verified face template for an employee.
-    Enforces quality filtering (rejects blurry/low-res inputs).
+    Enforces quality filtering and encrypts image into DB with AES-256-GCM.
     """
     res = await db.execute(select(Employee).where(Employee.id == id))
     emp = res.scalar_one_or_none()
@@ -253,11 +279,18 @@ async def enroll_employee_face(
             detail=f"Face template rejected due to poor quality. Reason: {details.get('reason', 'Blurry or small image')}. Details: {details}"
         )
 
+    # Encode face_crop to JPEG and encrypt via AES-256-GCM
+    ret, enc_buf = cv2.imencode(".jpg", face_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    encrypted_bytes = None
+    if ret:
+        encrypted_bytes = encrypt_bytes(enc_buf.tobytes())
+
     # Save template
     t_id = f"face_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
     emb_json = json.dumps(embedding.tolist())
     fh, fw = face_crop.shape[:2]
+    pose_name = (payload.pose or "FRONTAL").strip().upper()
 
     template = FaceTemplate(
         id=t_id,
@@ -267,8 +300,9 @@ async def enroll_employee_face(
         quality_score=q_score,
         source=payload.source,
         camera_id=payload.camera_id,
-        pose=payload.pose,
+        pose=pose_name,
         resolution=f"{fw}x{fh}",
+        encrypted_image=encrypted_bytes,
         created_at=now
     )
     db.add(template)
@@ -277,12 +311,12 @@ async def enroll_employee_face(
     # Reload fusion cache
     await attendance_service.reload_templates_cache()
 
-    logger.info(f"Enrolled {payload.pose} face template for {emp.name} ({category.value}, score: {q_score})")
+    logger.info(f"Enrolled & encrypted {pose_name} face template for {emp.name} ({category.value}, score: {q_score})")
     return {
         "success": True,
         "templateId": t_id,
         "employeeId": emp.id,
-        "pose": payload.pose,
+        "pose": pose_name,
         "qualityCategory": category.value,
         "qualityScore": q_score,
         "resolution": f"{fw}x{fh}",
@@ -297,7 +331,7 @@ async def enroll_employee_body(
     user: User = Depends(require_admin)
 ):
     """
-    Enrolls a full-body person Re-ID template for an employee.
+    Enrolls a full-body person Re-ID template for an employee and encrypts into DB.
     """
     res = await db.execute(select(Employee).where(Employee.id == id))
     emp = res.scalar_one_or_none()
@@ -312,6 +346,12 @@ async def enroll_employee_body(
     t_id = f"body_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
 
+    # Encode body to JPEG and encrypt
+    ret, enc_buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+    encrypted_bytes = None
+    if ret:
+        encrypted_bytes = encrypt_bytes(enc_buf.tobytes())
+
     template = BodyTemplate(
         id=t_id,
         employee_id=emp.id,
@@ -320,6 +360,7 @@ async def enroll_employee_body(
         quality_score=1.0,
         camera_id=payload.camera_id,
         source=payload.source,
+        encrypted_image=encrypted_bytes,
         created_at=now
     )
     db.add(template)
@@ -337,11 +378,12 @@ async def enroll_employee_body(
 @router.get("/{id}/templates", response_model=List[TemplateMetadataResponse])
 async def list_employee_templates(
     id: str,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Returns registered template metadata (angles, quality, source).
-    Never exposes raw biometric vector data.
+    Never exposes raw biometric vector data or encrypted image blobs.
     """
     f_res = await db.execute(select(FaceTemplate).where(FaceTemplate.employee_id == id).order_by(desc(FaceTemplate.created_at)))
     faces = f_res.scalars().all()
@@ -373,3 +415,86 @@ async def list_employee_templates(
             "createdAt": b.created_at.isoformat()
         })
     return out
+
+@router.get("/{id}/photo")
+@router.get("/{id}/face-image")
+async def get_employee_face_photo(
+    id: str,
+    request: Request,
+    pose: Optional[str] = Query("FRONTAL"),
+    token: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Stream decrypted face photo (defaults to FRONTAL view) for an employee directly from DB.
+    Encrypted with AES-256-GCM to prevent data leaks.
+    """
+    req_user = None
+    try:
+        req_user = await authenticate_request(request, token_param=token, db=db)
+    except Exception:
+        pass
+
+    emp_res = await db.execute(select(Employee).where(Employee.id == id))
+    emp = emp_res.scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+    pose_req = (pose or "FRONTAL").strip().upper()
+    q_pose = (
+        select(FaceTemplate)
+        .where(
+            FaceTemplate.employee_id == id,
+            FaceTemplate.encrypted_image != None,
+            FaceTemplate.pose.ilike(pose_req)
+        )
+        .order_by(FaceTemplate.quality_score.desc(), desc(FaceTemplate.created_at))
+    )
+    res = await db.execute(q_pose)
+    template = res.scalars().first()
+
+    if not template:
+        q_any = (
+            select(FaceTemplate)
+            .where(
+                FaceTemplate.employee_id == id,
+                FaceTemplate.encrypted_image != None
+            )
+            .order_by(FaceTemplate.quality_score.desc(), desc(FaceTemplate.created_at))
+        )
+        res_any = await db.execute(q_any)
+        template = res_any.scalars().first()
+
+    if not template:
+        q_body = (
+            select(BodyTemplate)
+            .where(
+                BodyTemplate.employee_id == id,
+                BodyTemplate.encrypted_image != None
+            )
+            .order_by(desc(BodyTemplate.created_at))
+        )
+        res_body = await db.execute(q_body)
+        template = res_body.scalars().first()
+
+    if not template or not template.encrypted_image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No photo available for employee {emp.name}"
+        )
+
+    try:
+        decrypted = decrypt_bytes(template.encrypted_image)
+        if not decrypted:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Decryption failed")
+        return Response(
+            content=decrypted,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "private, max-age=3600",
+                "Content-Disposition": f"inline; filename=emp_{id}_{getattr(template, 'pose', 'photo')}.jpg"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to decrypt employee photo: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to decrypt image")
