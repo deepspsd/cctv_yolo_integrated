@@ -398,7 +398,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         aria-hidden={!drawerOpen}
       >
         {/* Background decorative watermark */}
-        <div className="absolute right-12 bottom-12 select-none pointer-events-none opacity-[0.02] dark:opacity-[0.03] font-serif text-[180px] lg:text-[240px] font-bold italic leading-none text-black dark:text-orange-500">
+        <div className="absolute right-12 bottom-12 select-none pointer-events-none opacity-[0.06] dark:opacity-[0.08] font-serif text-[180px] lg:text-[240px] font-bold italic leading-none text-black dark:text-orange-500 transition-opacity">
           CCTV
         </div>
 

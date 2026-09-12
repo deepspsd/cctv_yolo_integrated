@@ -184,6 +184,14 @@ async def update_employee(
     if not emp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
+    if payload.employee_code is not None and payload.employee_code.strip():
+        new_code = payload.employee_code.strip().upper()
+        if new_code != emp.employee_code:
+            existing = await db.execute(select(Employee).where(Employee.employee_code == new_code))
+            if existing.scalar_one_or_none():
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Employee code '{new_code}' already in use.")
+            emp.employee_code = new_code
+
     if payload.name is not None: emp.name = payload.name.strip()
     if payload.department is not None: emp.department = payload.department.strip()
     if payload.role is not None: emp.role = payload.role.strip()
@@ -262,6 +270,59 @@ async def enroll_employee_face(
     fh, fw = face_crop.shape[:2]
     pose_name = (payload.pose_angle or payload.pose or "FRONTAL").strip().upper()
 
+    # 1. Check if angle already exists: if yes, EDIT/UPDATE in place (never create duplicate template)
+    existing_angle = await db.execute(
+        select(FaceTemplate).where(
+            FaceTemplate.employee_id == emp.id,
+            FaceTemplate.pose.ilike(pose_name)
+        )
+    )
+    existing_tpl = existing_angle.scalar_one_or_none()
+
+    # 2. Enforce unique face across all OTHER employees (biometric anti-duplicate detection)
+    all_faces = await db.execute(
+        select(FaceTemplate, Employee).join(Employee, FaceTemplate.employee_id == Employee.id)
+    )
+    for ft, other_emp in all_faces.all():
+        if ft.embedding and ft.employee_id != emp.id:
+            try:
+                tpl_emb = np.array(json.loads(ft.embedding), dtype=np.float32)
+                sim = face_pipeline.embedding_model.compute_similarity(embedding, tpl_emb)
+                if sim >= 0.72:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Face already registered! This face matches employee '{other_emp.name}' ({other_emp.employee_code}) with {int(sim*100)}% match. Cannot register this face to another employee."
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+
+    if existing_tpl:
+        # EDIT / UPDATE in-place (never create duplicate row)
+        existing_tpl.embedding = emb_json
+        existing_tpl.quality_score = q_score
+        existing_tpl.source = payload.source
+        existing_tpl.camera_id = payload.camera_id
+        existing_tpl.resolution = f"{fw}x{fh}"
+        existing_tpl.encrypted_image = encrypted_bytes
+        existing_tpl.created_at = now
+        await db.commit()
+        await attendance_service.reload_templates_cache()
+        logger.info(f"Updated/Edited existing {pose_name} face template in DB for {emp.name}")
+        return {
+            "success": True,
+            "action": "updated",
+            "templateId": existing_tpl.id,
+            "employeeId": emp.id,
+            "pose": pose_name,
+            "qualityCategory": category.value,
+            "qualityScore": q_score,
+            "resolution": f"{fw}x{fh}",
+            "details": details
+        }
+
+    # Otherwise CREATE new (first time only)
     template = FaceTemplate(
         id=t_id,
         employee_id=emp.id,
@@ -284,6 +345,7 @@ async def enroll_employee_face(
     logger.info(f"Enrolled & encrypted {pose_name} face template for {emp.name} ({category.value}, score: {q_score})")
     return {
         "success": True,
+        "action": "created",
         "templateId": t_id,
         "employeeId": emp.id,
         "pose": pose_name,
@@ -302,6 +364,7 @@ async def enroll_employee_body(
 ):
     """
     Enrolls a full-body person Re-ID template for an employee and encrypts into DB.
+    If already exists, updates/edits in place (never creates duplicate).
     """
     res = await db.execute(select(Employee).where(Employee.id == id))
     emp = res.scalar_one_or_none()
@@ -322,6 +385,29 @@ async def enroll_employee_body(
     if ret:
         encrypted_bytes = encrypt_bytes(enc_buf.tobytes())
 
+    # Check if body template already exists: if yes, EDIT in-place
+    existing_body = await db.execute(
+        select(BodyTemplate).where(BodyTemplate.employee_id == emp.id)
+    )
+    existing_body_tpl = existing_body.scalar_one_or_none()
+
+    if existing_body_tpl:
+        existing_body_tpl.embedding = json.dumps(embedding.tolist())
+        existing_body_tpl.quality_score = 1.0
+        existing_body_tpl.camera_id = payload.camera_id
+        existing_body_tpl.source = payload.source
+        existing_body_tpl.encrypted_image = encrypted_bytes
+        existing_body_tpl.created_at = now
+        await db.commit()
+        await attendance_service.reload_templates_cache()
+        return {
+            "success": True,
+            "action": "updated",
+            "templateId": existing_body_tpl.id,
+            "employeeId": emp.id,
+            "source": payload.source
+        }
+
     template = BodyTemplate(
         id=t_id,
         employee_id=emp.id,
@@ -340,10 +426,46 @@ async def enroll_employee_body(
 
     return {
         "success": True,
+        "action": "created",
         "templateId": t_id,
         "employeeId": emp.id,
         "source": payload.source
     }
+
+@router.delete("/{id}/templates/{pose}")
+async def delete_employee_template(
+    id: str,
+    pose: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin)
+):
+    """
+    Deletes a specific biometric face angle or body Re-ID template from the database.
+    """
+    res = await db.execute(select(Employee).where(Employee.id == id))
+    emp = res.scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+    pose_clean = pose.strip().upper()
+    if pose_clean in ["BODY", "BODY_REID", "REID"]:
+        b_res = await db.execute(select(BodyTemplate).where(BodyTemplate.employee_id == id))
+        tpl = b_res.scalars().first()
+        if not tpl:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Body template not found in database")
+        await db.delete(tpl)
+        await db.commit()
+        await attendance_service.reload_templates_cache()
+        return {"success": True, "message": f"Body Re-ID template deleted for {emp.name}"}
+    else:
+        f_res = await db.execute(select(FaceTemplate).where(FaceTemplate.employee_id == id, FaceTemplate.pose.ilike(pose_clean)))
+        tpl = f_res.scalars().first()
+        if not tpl:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{pose_clean.title()} face template not found in database")
+        await db.delete(tpl)
+        await db.commit()
+        await attendance_service.reload_templates_cache()
+        return {"success": True, "message": f"{pose_clean.title()} face template deleted for {emp.name}"}
 
 @router.get("/{id}/templates", response_model=List[TemplateMetadataResponse])
 async def list_employee_templates(

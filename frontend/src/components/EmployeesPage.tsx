@@ -18,7 +18,7 @@ import {
   User,
 } from 'lucide-react';
 import { Employee, FaceTemplate, BodyTemplate } from '../types';
-import { employeeService, CreateEmployeePayload } from '../services/employeeService';
+import { employeeService, CreateEmployeePayload, UpdateEmployeePayload } from '../services/employeeService';
 import { soundService } from '../services/soundService';
 
 export const EmployeesPage: React.FC = () => {
@@ -43,6 +43,23 @@ export const EmployeesPage: React.FC = () => {
   const [formError, setFormError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Edit Form State
+  const [editModalEmployee, setEditModalEmployee] = useState<Employee | null>(null);
+  const [editFormData, setEditFormData] = useState<UpdateEmployeePayload>({
+    employeeCode: '',
+    fullName: '',
+    department: 'Spinning',
+    designation: 'Operator',
+    isActive: true,
+    notes: '',
+  });
+  const [editFormError, setEditFormError] = useState<string | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  // Delete State
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; code: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
   // Face & Body Enrollment State
   const [enrollMode, setEnrollMode] = useState<'FACE' | 'BODY'>('FACE');
   const [enrollPose, setEnrollPose] = useState<string>('FRONTAL');
@@ -54,6 +71,7 @@ export const EmployeesPage: React.FC = () => {
     faceTemplates: FaceTemplate[];
     bodyTemplates: BodyTemplate[];
   } | null>(null);
+  const [isDeletingTemplate, setIsDeletingTemplate] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -65,6 +83,7 @@ export const EmployeesPage: React.FC = () => {
         search: searchQuery.trim() ? searchQuery : undefined,
       });
       setEmployees(list);
+      setPhotoVersion(Date.now());
     } catch (err) {
       console.error('Failed to load employees:', err);
     } finally {
@@ -234,13 +253,72 @@ export const EmployeesPage: React.FC = () => {
     }
   };
 
-  const handleDeleteEmployee = async (id: string, name: string) => {
-    if (!confirm(`Are you sure you want to deactivate/delete employee ${name}?`)) return;
+  const handleDeleteCurrentTemplate = async () => {
+    if (!enrollModalEmployee) return;
+    const poseToDelete = enrollMode === 'FACE' ? enrollPose : 'BODY';
+    if (!confirm(`Delete ${poseToDelete} biometric template from database for ${enrollModalEmployee.fullName}?`)) return;
+    setIsDeletingTemplate(true);
+    soundService.playTactileBlip(500, 0.04);
     try {
-      await employeeService.deleteEmployee(id);
+      await employeeService.deleteTemplate(enrollModalEmployee.id, poseToDelete);
+      const updated = await employeeService.getTemplates(enrollModalEmployee.id);
+      setExistingTemplates(updated);
+      setEnrollImageBase64(null);
+      setEnrollStatus(`✓ ${poseToDelete} template removed from database.`);
       await loadEmployees();
-    } catch (err) {
-      alert('Failed to delete employee');
+    } catch (err: any) {
+      setEnrollError(err.message || 'Failed to delete template');
+    } finally {
+      setIsDeletingTemplate(false);
+    }
+  };
+
+  const openEditModal = (emp: Employee) => {
+    setEditModalEmployee(emp);
+    setEditFormData({
+      employeeCode: emp.employeeCode,
+      fullName: emp.fullName,
+      department: emp.department,
+      designation: emp.designation,
+      isActive: emp.isActive,
+      notes: emp.notes || '',
+    });
+    setEditFormError(null);
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editModalEmployee) return;
+    if (!editFormData.fullName?.trim() || !editFormData.employeeCode?.trim()) {
+      setEditFormError('Employee Code and Full Name are required.');
+      return;
+    }
+    setIsUpdating(true);
+    setEditFormError(null);
+    soundService.playTactileBlip(840, 0.02);
+    try {
+      await employeeService.updateEmployee(editModalEmployee.id, editFormData);
+      setEditModalEmployee(null);
+      await loadEmployees();
+    } catch (err: any) {
+      setEditFormError(err.message || 'Failed to update employee in database');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    soundService.playTactileBlip(500, 0.04);
+    try {
+      await employeeService.deleteEmployee(deleteTarget.id);
+      setDeleteTarget(null);
+      await loadEmployees();
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete employee from database');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -369,25 +447,27 @@ export const EmployeesPage: React.FC = () => {
                 .map((n) => n[0])
                 .slice(0, 2)
                 .join('') || 'ST';
-            const hasBiometrics = (emp.faceTemplatesCount || 0) > 0;
+            const hasBiometrics = (emp.faceTemplatesCount || 0) > 0 || (emp.enrolledAngles && emp.enrolledAngles.length > 0);
             const completeness = emp.completenessScore ?? ((emp.enrolledAngles?.length) || (hasBiometrics ? 1 : 0));
             const isAllDone = completeness === 4;
-            const photoUrl = emp.avatarUrl ? `${emp.avatarUrl}&v=${photoVersion}` : null;
+            const photoUrl = (hasBiometrics || emp.avatarUrl)
+              ? employeeService.getEmployeePhotoUrl(emp.id, 'FRONTAL', photoVersion)
+              : null;
 
             return (
               <div
                 key={emp.id}
                 className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-white dark:bg-[#111116] border-black/[0.08] dark:border-white/[0.08] hover:border-orange-500/50 dark:hover:border-orange-500/50 shadow-xs hover:shadow-xl dark:hover:shadow-[0_8px_30px_rgba(0,0,0,0.8)] transition-all duration-200"
               >
-                {/* Visual Viewport Header with CCTV scanlines & Frontal Face */}
-                <div className="relative aspect-video w-full overflow-hidden bg-black flex flex-col justify-between p-3 select-none">
+                {/* 1. CCTV Face / Video Viewport */}
+                <div className="relative h-48 w-full overflow-hidden bg-black flex flex-col justify-between p-3 select-none">
                   {/* Frontal Face Photo (Decrypted from DB) */}
                   {photoUrl ? (
                     <img
                       key={`photo-${emp.id}-${photoVersion}`}
                       src={photoUrl}
                       alt={emp.fullName}
-                      className="absolute inset-0 w-full h-full object-cover object-top filter brightness-[0.92] contrast-[1.08] group-hover:scale-105 transition-transform duration-300"
+                      className="absolute inset-0 w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-300"
                       onError={(e) => {
                         e.currentTarget.style.display = 'none';
                         const fallback = e.currentTarget.parentElement?.querySelector('.avatar-fallback') as HTMLElement;
@@ -396,59 +476,18 @@ export const EmployeesPage: React.FC = () => {
                     />
                   ) : null}
 
-                  {/* Gradient vignettes for text contrast */}
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-black/75 pointer-events-none z-10" />
+                  {/* Clean top and bottom edge vignettes for badge contrast, keeping photo bright and vivid */}
+                  <div className="absolute inset-x-0 top-0 h-14 bg-gradient-to-b from-black/70 to-transparent pointer-events-none z-10" />
+                  <div className="absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-black/75 to-transparent pointer-events-none z-10" />
 
-                  {/* Subtle CCTV scanline backdrop */}
-                  <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.4)_50%)] bg-[length:100%_4px] pointer-events-none z-10 opacity-50" />
-
-                  {/* Top Badges */}
-                  <div className="relative z-20 flex items-center justify-between gap-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className="px-2 py-0.5 rounded text-[10.5px] font-mono font-bold bg-black/85 text-white backdrop-blur-md border border-white/20 shadow-xs">
-                        {emp.employeeCode}
-                      </span>
-                      <span
-                        className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold uppercase backdrop-blur-md border flex items-center gap-1 ${
-                          isAllDone
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                            : completeness > 0
-                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                            : 'bg-red-500/20 text-red-300 border-red-500/40'
-                        }`}
-                      >
-                        <ShieldCheck className="w-2.5 h-2.5" />
-                        {isAllDone ? '4/4 PRIME' : `${completeness}/4 ${completeness > 0 ? 'PARTIAL' : 'MANDATORY'}`}
-                      </span>
-
-                      {/* 4 Compulsory Angle Badges: F, L, R, B */}
-                      <div className="flex items-center gap-0.5">
-                        {[
-                          { id: 'FRONTAL', label: 'F', name: 'Frontal' },
-                          { id: 'LEFT_PROFILE', label: 'L', name: 'Left' },
-                          { id: 'RIGHT_PROFILE', label: 'R', name: 'Right' },
-                          { id: 'BODY', label: 'B', name: 'Body' },
-                        ].map((ang) => {
-                          const isPresent = (emp.enrolledAngles || []).includes(ang.id) || (ang.id === 'FRONTAL' && (emp.faceTemplatesCount || 0) > 0);
-                          return (
-                            <span
-                              key={ang.id}
-                              title={`${ang.name}: ${isPresent ? 'Enrolled' : 'Missing (Compulsory)'}`}
-                              className={`w-3.5 h-3.5 rounded text-[8px] font-mono font-bold flex items-center justify-center border ${
-                                isPresent
-                                  ? 'bg-emerald-500/30 text-emerald-300 border-emerald-400/50'
-                                  : 'bg-black/60 text-zinc-500 border-dashed border-zinc-600'
-                              }`}
-                            >
-                              {ang.label}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </div>
+                  {/* Top Bar inside Viewport: ONLY Code on Left and Active Status on Right (Un-compacted!) */}
+                  <div className="relative z-20 flex items-center justify-between">
+                    <span className="px-2.5 py-1 rounded-md text-[11px] font-mono font-bold bg-black/85 text-white backdrop-blur-md border border-white/20 shadow-xs tracking-wider">
+                      {emp.employeeCode}
+                    </span>
 
                     <span
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-tight backdrop-blur-md flex items-center gap-1 shadow-xs ${
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold tracking-tight backdrop-blur-md flex items-center gap-1.5 shadow-xs ${
                         emp.isActive ? 'bg-emerald-500/90 text-white' : 'bg-red-500/90 text-white'
                       }`}
                     >
@@ -461,24 +500,16 @@ export const EmployeesPage: React.FC = () => {
                     </span>
                   </div>
 
-                  {/* Center HUD / Avatar fallback */}
-                  <div className="relative z-20 flex flex-col items-center justify-center py-2">
-                    {/* Fallback initials when photo is not uploaded */}
-                    <div
-                      className={`avatar-fallback w-14 h-14 rounded-2xl bg-gradient-to-br from-[#1a1a24] to-[#0c0c10] border border-white/20 text-orange-400 font-bold font-mono text-lg items-center justify-center shadow-lg group-hover:scale-105 transition-transform duration-200 ${
-                        photoUrl ? 'hidden' : 'flex'
-                      }`}
-                    >
+                  {/* Center HUD / Avatar fallback when no photo is uploaded */}
+                  <div
+                    className={`avatar-fallback relative z-20 flex flex-col items-center justify-center my-auto transition-transform duration-200 ${
+                      photoUrl ? 'hidden' : 'flex'
+                    }`}
+                  >
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#1c1c26] to-[#0d0d12] border border-white/20 text-orange-400 font-bold font-mono text-xl flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform duration-200">
                       {initials}
                     </div>
-
-                    {/* Frontal ID Indicator when photo is loaded */}
-                    {photoUrl && (
-                      <span className="px-2 py-0.5 rounded-md bg-black/75 border border-cyan-500/40 text-cyan-300 text-[9.5px] font-mono backdrop-blur-md flex items-center gap-1 shadow-xs">
-                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                        <span>FRONTAL VIEW</span>
-                      </span>
-                    )}
+                    <span className="text-[10px] text-zinc-400 font-mono mt-1">No Frontal Photo</span>
                   </div>
 
                   {/* Quick Action Overlay on Hover */}
@@ -486,62 +517,127 @@ export const EmployeesPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => openEnrollmentModal(emp)}
-                      className="px-3.5 py-1.5 rounded-full bg-orange-500 hover:bg-orange-600 text-black font-semibold text-[12px] flex items-center gap-1.5 shadow-lg transform hover:scale-105 transition-all cursor-pointer"
-                      title="Enroll Face Biometrics"
+                      className="px-3.5 py-1.5 rounded-full bg-orange-500 hover:bg-orange-600 text-white font-semibold text-[12px] flex items-center gap-1.5 shadow-lg transform hover:scale-105 transition-all cursor-pointer"
+                      title="Enroll Face & Body Biometrics"
                     >
                       <CameraIcon className="w-3.5 h-3.5" />
-                      <span>{hasBiometrics ? 'Update Biometrics' : 'Enroll Biometrics'}</span>
+                      <span>{hasBiometrics ? 'Manage Biometrics' : 'Enroll Biometrics'}</span>
                     </button>
                     <span className="text-[10px] font-mono text-zinc-300 drop-shadow">
-                      {completeness}/4 angles captured
+                      {completeness}/4 biometric angles
                     </span>
                   </div>
 
-                  {/* Bottom Bar Info on Video viewport */}
-                  <div className="relative z-20 flex items-center justify-between text-[11px] font-mono text-zinc-300 pt-1">
-                    <span className="truncate text-[10.5px] tracking-tight">{emp.department}</span>
-                    <span className="text-[10.5px] tracking-tight text-orange-400 font-bold">
+                  {/* Bottom Bar Info on Viewport: Frontal View Badge + Department/Role */}
+                  <div className="relative z-20 flex items-center justify-between text-[11px] font-mono text-zinc-300">
+                    {photoUrl ? (
+                      <span className="px-2 py-0.5 rounded bg-black/80 border border-cyan-500/40 text-cyan-300 text-[9.5px] font-mono backdrop-blur-md flex items-center gap-1 shadow-xs">
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                        <span>FRONTAL VIEW</span>
+                      </span>
+                    ) : (
+                      <span className="text-[10.5px] text-zinc-400 truncate">{emp.department}</span>
+                    )}
+                    <span className="text-[10.5px] font-semibold text-orange-400 truncate bg-black/60 px-2 py-0.5 rounded backdrop-blur-md">
                       {emp.designation}
                     </span>
                   </div>
                 </div>
 
-                {/* Card Body Footer */}
-                <div className="p-3.5 flex items-center justify-between gap-2 border-t border-black/[0.04] dark:border-white/[0.06]">
+                {/* 2. DEDICATED BIOMETRICS RIBBON (Completely Un-compacted & Clear!) */}
+                <div className="px-3.5 py-2.5 bg-black/[0.02] dark:bg-white/[0.02] border-t border-b border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between gap-2">
+                  {/* Left: 1/4 or 4/4 Enrolled Status Badge */}
+                  <div
+                    className={`px-2 py-0.5 rounded text-[10.5px] font-mono font-bold uppercase backdrop-blur-md border flex items-center gap-1.5 ${
+                      isAllDone
+                        ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                        : completeness > 0
+                        ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                        : 'bg-rose-500/15 text-rose-400 border-rose-500/30'
+                    }`}
+                  >
+                    <ShieldCheck className="w-3 h-3" />
+                    <span>{isAllDone ? '4/4 PRIME' : `${completeness}/4 ${completeness > 0 ? 'PARTIAL' : 'ENROLL'}`}</span>
+                  </div>
+
+                  {/* Right: 4 Dedicated Angle Indicators [F] [L] [R] [B] with clean badges */}
+                  <div className="flex items-center gap-1.5">
+                    {[
+                      { id: 'FRONTAL', label: 'Front', short: 'F' },
+                      { id: 'LEFT_PROFILE', label: 'Left', short: 'L' },
+                      { id: 'RIGHT_PROFILE', label: 'Right', short: 'R' },
+                      { id: 'BODY', label: 'Body', short: 'B' },
+                    ].map((ang) => {
+                      const isPresent =
+                        (emp.enrolledAngles || []).includes(ang.id) ||
+                        (ang.id === 'FRONTAL' && (emp.faceTemplatesCount || 0) > 0);
+                      return (
+                        <span
+                          key={ang.id}
+                          title={`${ang.label}: ${isPresent ? 'Enrolled in Database' : 'Missing (Compulsory)'}`}
+                          className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold flex items-center gap-1 border transition-all ${
+                            isPresent
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-xs'
+                              : 'bg-black/[0.04] dark:bg-white/[0.04] text-zinc-400 dark:text-zinc-500 border-dashed border-black/20 dark:border-white/20'
+                          }`}
+                        >
+                          <span
+                            className={`w-1 h-1 rounded-full ${
+                              isPresent ? 'bg-emerald-400' : 'bg-zinc-400'
+                            }`}
+                          />
+                          <span>{ang.short}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 3. Card Body Footer with Employee Info & EDIT / ENROLL / DELETE Actions */}
+                <div className="p-3.5 flex items-center justify-between gap-2">
                   <div className="min-w-0">
-                    <h4 className="font-semibold text-[13.5px] text-[#0a0a0a] dark:text-white tracking-tight truncate">
+                    <h4 className="font-semibold text-[14px] text-[#0a0a0a] dark:text-white tracking-tight truncate">
                       {emp.fullName}
                     </h4>
                     <p className="text-[11px] font-mono text-[#8c8c8c] dark:text-[#71717a] truncate mt-0.5">
                       {emp.employeeCode} • {emp.department}
                     </p>
                     {!isAllDone ? (
-                      <div className="text-[10.5px] text-amber-500 font-mono mt-0.5 flex items-center gap-1">
+                      <div className="text-[10.5px] text-amber-500 font-mono mt-1 flex items-center gap-1">
                         <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
                         <span>Requires {4 - completeness} more capture{4 - completeness > 1 ? 's' : ''}</span>
                       </div>
                     ) : (
-                      <div className="text-[10.5px] text-emerald-400 font-mono mt-0.5 flex items-center gap-1">
+                      <div className="text-[10.5px] text-emerald-400 font-mono mt-1 flex items-center gap-1">
                         <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                         <span>Full CCTV Primed</span>
                       </div>
                     )}
                   </div>
 
+                  {/* Action Buttons: Edit, Biometrics, Delete */}
                   <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                     <button
                       type="button"
+                      onClick={() => openEditModal(emp)}
+                      className="p-1.5 text-zinc-400 hover:text-orange-400 hover:bg-orange-500/10 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-orange-500/20"
+                      title="Edit Employee Information (Database)"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => openEnrollmentModal(emp)}
-                      className="p-1.5 text-orange-500 hover:text-orange-400 hover:bg-orange-500/10 rounded-md transition-colors cursor-pointer"
-                      title="Enroll Biometrics"
+                      className="p-1.5 text-orange-500 hover:text-orange-400 hover:bg-orange-500/10 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-orange-500/20"
+                      title="Enroll Biometrics & Re-ID"
                     >
                       <CameraIcon className="w-3.5 h-3.5" />
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleDeleteEmployee(emp.id, emp.fullName || 'Staff')}
-                      className="p-1.5 text-[#ef4444] dark:text-[#f87171] hover:bg-[#ef4444]/10 rounded-md transition-colors cursor-pointer"
-                      title="Delete / Deactivate Employee"
+                      onClick={() => setDeleteTarget({ id: emp.id, name: emp.fullName || 'Staff', code: emp.employeeCode })}
+                      className="p-1.5 text-rose-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-rose-500/20"
+                      title="Delete Employee from Database"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -834,6 +930,34 @@ export const EmployeesPage: React.FC = () => {
               </p>
             </div>
 
+            {/* Status if already enrolled: Edit or Delete banner */}
+            {(() => {
+              const isEnrolled = enrollMode === 'FACE'
+                ? (existingTemplates?.faceTemplates || []).some((t) => t.poseAngle === enrollPose)
+                : (existingTemplates?.bodyTemplates || []).length > 0;
+              if (!isEnrolled) return null;
+              return (
+                <div className="p-3 rounded-xl border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 text-xs font-mono flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <span className="truncate">
+                      <strong>{enrollMode === 'FACE' ? enrollPose : 'Body'} registered in DB.</strong> Uploading a new photo will edit & replace it in place.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isDeletingTemplate}
+                    onClick={handleDeleteCurrentTemplate}
+                    className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[10.5px] font-bold flex items-center gap-1 cursor-pointer transition shrink-0"
+                    title="Delete this template from database"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Delete Template</span>
+                  </button>
+                </div>
+              );
+            })()}
+
             {/* File Upload Box */}
             <div>
               <input
@@ -919,16 +1043,220 @@ export const EmployeesPage: React.FC = () => {
                 {isEnrolling ? (
                   <>
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Extracting & Encrypting...</span>
+                    <span>Saving to Database...</span>
                   </>
                 ) : (
                   <>
-                    <ShieldCheck className="w-4 h-4" />
-                    <span>
-                      {enrollMode === 'FACE'
-                        ? `Save & Encrypt ${enrollPose === 'FRONTAL' ? 'Frontal Face' : enrollPose === 'LEFT_PROFILE' ? 'Left Profile' : 'Right Profile'}`
-                        : 'Save & Encrypt Body Re-ID'}
-                    </span>
+                    {(() => {
+                      const isEnrolled = enrollMode === 'FACE'
+                        ? (existingTemplates?.faceTemplates || []).some((t) => t.poseAngle === enrollPose)
+                        : (existingTemplates?.bodyTemplates || []).length > 0;
+                      return isEnrolled ? (
+                        <>
+                          <Edit2 className="w-4 h-4" />
+                          <span>Update & Replace in DB</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="w-4 h-4" />
+                          <span>
+                            {enrollMode === 'FACE'
+                              ? `Save & Encrypt ${enrollPose === 'FRONTAL' ? 'Frontal Face' : enrollPose === 'LEFT_PROFILE' ? 'Left Profile' : 'Right Profile'}`
+                              : 'Save & Encrypt Body Re-ID'}
+                          </span>
+                        </>
+                      );
+                    })()}
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Edit Employee Modal (Database Updates) ────────────────────── */}
+      {editModalEmployee && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121217] p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-black/[0.08] dark:border-white/[0.08]">
+              <div className="flex items-center gap-2">
+                <Edit2 className="w-5 h-5 text-orange-400" />
+                <h3 className="font-bold text-base text-[#0a0a0a] dark:text-white">
+                  Edit Employee
+                </h3>
+              </div>
+              <button
+                onClick={() => setEditModalEmployee(null)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {editFormError && (
+              <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-xs">
+                {editFormError}
+              </div>
+            )}
+
+            <form onSubmit={handleEditSubmit} className="space-y-3.5 text-xs">
+              <div>
+                <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
+                  Employee Code *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. 89443"
+                  value={editFormData.employeeCode || ''}
+                  onChange={(e) => setEditFormData({ ...editFormData, employeeCode: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-black/[0.03] dark:bg-black/40 border border-black/[0.08] dark:border-white/[0.1] text-[#0a0a0a] dark:text-white focus:outline-none focus:border-orange-500 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
+                  Full Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Deepak Prasad S"
+                  value={editFormData.fullName || ''}
+                  onChange={(e) => setEditFormData({ ...editFormData, fullName: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-black/[0.03] dark:bg-black/40 border border-black/[0.08] dark:border-white/[0.1] text-[#0a0a0a] dark:text-white focus:outline-none focus:border-orange-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
+                    Department
+                  </label>
+                  <input
+                    type="text"
+                    value={editFormData.department || ''}
+                    onChange={(e) => setEditFormData({ ...editFormData, department: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-black/[0.03] dark:bg-black/40 border border-black/[0.08] dark:border-white/[0.1] text-[#0a0a0a] dark:text-white focus:outline-none focus:border-orange-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
+                    Designation / Role
+                  </label>
+                  <input
+                    type="text"
+                    value={editFormData.designation || ''}
+                    onChange={(e) => setEditFormData({ ...editFormData, designation: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-black/[0.03] dark:bg-black/40 border border-black/[0.08] dark:border-white/[0.1] text-[#0a0a0a] dark:text-white focus:outline-none focus:border-orange-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
+                  Status
+                </label>
+                <select
+                  value={editFormData.isActive ? 'active' : 'inactive'}
+                  onChange={(e) => setEditFormData({ ...editFormData, isActive: e.target.value === 'active' })}
+                  className="w-full px-3 py-2 rounded-xl bg-black/[0.03] dark:bg-black/40 border border-black/[0.08] dark:border-white/[0.1] text-[#0a0a0a] dark:text-white focus:outline-none focus:border-orange-500"
+                >
+                  <option value="active">Active (Monitored by CCTV)</option>
+                  <option value="inactive">Inactive (Suspended)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
+                  Notes / Shift Info
+                </label>
+                <input
+                  type="text"
+                  placeholder="Optional notes"
+                  value={editFormData.notes || ''}
+                  onChange={(e) => setEditFormData({ ...editFormData, notes: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-black/[0.03] dark:bg-black/40 border border-black/[0.08] dark:border-white/[0.1] text-[#0a0a0a] dark:text-white focus:outline-none focus:border-orange-500"
+                />
+              </div>
+
+              <div className="pt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditModalEmployee(null)}
+                  className="px-4 py-2 rounded-xl border border-black/10 dark:border-white/10 text-slate-400 hover:text-white cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUpdating}
+                  className="px-5 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-semibold cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shadow-md"
+                >
+                  {isUpdating ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Updating Database...</span>
+                    </>
+                  ) : (
+                    <span>Save Changes in DB</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Delete Employee Confirmation Modal ──────────────────────── */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl border border-rose-500/30 bg-white dark:bg-[#141214] p-6 shadow-2xl space-y-4 animate-fadeIn">
+            <div className="flex items-center gap-3 text-rose-500">
+              <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20">
+                <Trash2 className="w-6 h-6 text-rose-500" />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-[#0a0a0a] dark:text-white">
+                  Delete Employee from Database?
+                </h3>
+                <p className="text-xs text-rose-400/90 font-mono">
+                  Irreversible Database Action
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-600 dark:text-zinc-300 leading-relaxed">
+              Are you sure you want to permanently delete <strong className="text-[#0a0a0a] dark:text-white font-semibold">{deleteTarget.name}</strong> (<span className="font-mono text-orange-400">{deleteTarget.code}</span>)?
+              <br /><br />
+              This will permanently delete the employee record and cascade-purge all associated face templates, multi-angle embeddings, and Re-ID models from SQLite database <span className="font-mono text-cyan-400">cctv.db</span>.
+            </p>
+
+            <div className="pt-2 flex justify-end gap-2.5 border-t border-black/[0.06] dark:border-white/[0.08]">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setDeleteTarget(null)}
+                className="px-4 py-2 rounded-xl border border-black/10 dark:border-white/10 text-slate-400 hover:text-white cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={confirmDelete}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shadow-lg shadow-rose-600/30"
+              >
+                {isDeleting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting from DB...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Permanently Delete</span>
                   </>
                 )}
               </button>

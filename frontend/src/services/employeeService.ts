@@ -1,5 +1,5 @@
 import { Employee, FaceTemplate, BodyTemplate } from '../types';
-import { apiFetch } from './authService';
+import { apiFetch, getStoredToken } from './authService';
 
 export interface CreateEmployeePayload {
   employeeCode: string;
@@ -29,7 +29,7 @@ export interface EnrollmentResult {
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:5000/api';
 
 export const getEmployeePhotoUrl = (id: string, pose: string = 'FRONTAL', v?: string | number): string => {
-  const token = localStorage.getItem('token');
+  const token = getStoredToken() || localStorage.getItem('token');
   const params = new URLSearchParams();
   if (token) params.set('token', token);
   params.set('pose', pose);
@@ -55,7 +55,7 @@ export const employeeService = {
       const faceCount = raw.faceTemplatesCount || raw.templateCount || 0;
       const bodyCount = raw.bodyTemplatesCount || 0;
       const hasPhoto = raw.hasPhoto || faceCount > 0;
-      const avatarUrl = raw.avatarUrl || (hasPhoto ? getEmployeePhotoUrl(id, 'FRONTAL') : null);
+      const avatarUrl = hasPhoto ? getEmployeePhotoUrl(id, 'FRONTAL') : null;
 
       return {
         id,
@@ -141,6 +141,7 @@ export const employeeService = {
     const res = await apiFetch(`/employees/${id}`, {
       method: 'PUT',
       body: JSON.stringify({
+        employeeCode: payload.employeeCode,
         name: payload.fullName,
         department: payload.department,
         role: payload.designation,
@@ -152,17 +153,25 @@ export const employeeService = {
       throw new Error(err.detail || 'Failed to update employee');
     }
     const raw = await res.json();
+    const faceCount = raw.faceTemplatesCount || raw.templateCount || 0;
+    const bodyCount = raw.bodyTemplatesCount || 0;
+    const hasPhoto = raw.hasPhoto || faceCount > 0;
+    const avatarUrl = hasPhoto ? getEmployeePhotoUrl(raw.id, 'FRONTAL') : null;
+
     return {
       id: raw.id,
       employeeCode: raw.employeeCode || raw.employee_code || '',
       fullName: raw.fullName || raw.name || '',
       department: raw.department || '',
       designation: raw.designation || raw.role || '',
-      avatarUrl: null,
+      avatarUrl,
       isActive: raw.isActive !== undefined ? raw.isActive : (raw.active !== undefined ? raw.active : true),
       notes: payload.notes || null,
-      faceTemplatesCount: raw.faceTemplatesCount || raw.templateCount || 0,
-      bodyTemplatesCount: 0,
+      faceTemplatesCount: faceCount,
+      bodyTemplatesCount: bodyCount,
+      enrolledAngles: raw.enrolledAngles || raw.enrolled_angles || [],
+      completenessScore: raw.completenessScore ?? raw.completeness_score ?? 0,
+      isComplete: raw.isComplete ?? raw.is_complete ?? false,
       createdAt: raw.createdAt || new Date().toISOString(),
       updatedAt: raw.updatedAt || new Date().toISOString(),
     };
@@ -231,10 +240,13 @@ export const employeeService = {
     };
   },
 
-  async deleteTemplate(templateId: string, type: 'face' | 'body'): Promise<void> {
-    const res = await apiFetch(`/employees/templates/${templateId}?type=${type}`, {
+  async deleteTemplate(employeeId: string, pose: string): Promise<void> {
+    const res = await apiFetch(`/employees/${employeeId}/templates/${pose}`, {
       method: 'DELETE',
     });
-    if (!res.ok) throw new Error(`Failed to delete template: ${res.statusText}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Failed to delete template');
+    }
   },
 };

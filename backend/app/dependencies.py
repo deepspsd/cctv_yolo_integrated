@@ -66,7 +66,8 @@ async def get_current_user(
 
 async def require_admin(current_user: User = Depends(get_current_user)) -> User:
     """Dependency that additionally requires Administrator role."""
-    if current_user.role.value != "Administrator":
+    role_str = (getattr(current_user.role, "value", None) or str(current_user.role)).strip().upper()
+    if role_str not in ["ADMINISTRATOR", "ADMIN"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Administrator access required.",

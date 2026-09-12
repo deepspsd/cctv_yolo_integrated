@@ -186,6 +186,7 @@ class EmployeeCreate(EmployeeBase):
 
 
 class EmployeeUpdate(BaseModel):
+    employee_code: str | None = Field(default=None, alias="employeeCode")
     name: str | None = None
     department: str | None = None
     role: str | None = None
