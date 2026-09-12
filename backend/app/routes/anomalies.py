@@ -132,7 +132,7 @@ async def list_anomalies(
     date_to: Optional[datetime] = Query(None, alias="dateTo"),
     employee_id: Optional[str] = Query(None, alias="employeeId"),
     order: Optional[str] = Query("desc", pattern="^(asc|desc)$"),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=2000),
     offset: int = Query(0, ge=0),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)

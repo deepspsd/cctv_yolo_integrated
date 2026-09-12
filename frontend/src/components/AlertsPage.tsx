@@ -1272,9 +1272,11 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         // Status filter
         if (selectedStatus !== 'ALL') {
           const norm = (alert.status || 'NEW').toUpperCase();
-          if (selectedStatus === 'NEW' && norm !== 'NEW' && norm !== 'CONFIRMED' && norm !== 'ACTIVE') {
+          if (selectedStatus === 'UNRESOLVED') {
+            if (norm === 'RESOLVED') return false;
+          } else if (selectedStatus === 'NEW' && norm !== 'NEW' && norm !== 'CONFIRMED' && norm !== 'ACTIVE') {
             return false;
-          } else if (selectedStatus !== 'NEW' && norm !== selectedStatus) {
+          } else if (selectedStatus !== 'NEW' && selectedStatus !== 'UNRESOLVED' && norm !== selectedStatus) {
             return false;
           }
         }
@@ -1404,6 +1406,9 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
       setResolvingId(id);
       await anomalyService.updateAnomalyStatus(id, newStatus);
       setLocalStatuses((prev) => ({ ...prev, [id]: newStatus }));
+      setHistoricalAlerts((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, status: newStatus } : a))
+      );
       if (inspectAlert && inspectAlert.id === id) {
         setInspectAlert((prev) => (prev ? { ...prev, status: newStatus } : null));
       }
@@ -1469,16 +1474,31 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-4 border-b border-black/[0.08] dark:border-white/[0.08]">
           <div>
             <div className="flex items-center gap-2 mb-1">
-              <span className="w-2 h-2 rounded-full bg-[#ef4444] animate-pulse shadow-[0_0_6px_rgba(239,68,68,0.8)]" />
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  summary.unresolved > 0
+                    ? 'bg-[#ef4444] animate-pulse shadow-[0_0_6px_rgba(239,68,68,0.8)]'
+                    : 'bg-[#17c964] shadow-[0_0_6px_rgba(23,201,100,0.8)]'
+                }`}
+              />
               <span className="text-[11px] font-mono uppercase tracking-wider text-[#6b6b6b] dark:text-[#a1a1aa]">
                 Anomaly Evidence Stream
               </span>
             </div>
             <h1
               id="alerts-main-title"
-              className="text-[30px] sm:text-[38px] font-semibold text-[#0a0a0a] dark:text-[#fafafa] tracking-tightest leading-tight flex items-center gap-3"
+              className="text-[30px] sm:text-[38px] font-semibold text-[#0a0a0a] dark:text-[#fafafa] tracking-tightest leading-tight flex items-center gap-3 flex-wrap"
             >
-              Alerts & Evidence
+              <span>Alerts & Evidence</span>
+              {summary.unresolved > 0 ? (
+                <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-500 border border-amber-500/30">
+                  {summary.unresolved} Pending
+                </span>
+              ) : (
+                <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
+                  All Resolved ✓
+                </span>
+              )}
             </h1>
             <p className="text-[14px] sm:text-[15px] text-[#6b6b6b] dark:text-[#a1a1aa] mt-0.5 tracking-tight">
               Review detected violations and inspect captured evidence photos from backend storage.
@@ -1579,8 +1599,15 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
 
         {/* Card 4: Unresolved */}
         <div
-          onClick={() => setSelectedStatus('NEW')}
-          className="group relative cursor-pointer overflow-hidden rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#0f0f12] p-4 transition-all hover:border-[#f59e0b]/50 shadow-sm"
+          onClick={() => {
+            soundService.playTactileBlip(750, 0.02);
+            setSelectedStatus((prev) => (prev === 'UNRESOLVED' ? 'ALL' : 'UNRESOLVED'));
+          }}
+          className={`group relative cursor-pointer overflow-hidden rounded-2xl border p-4 transition-all shadow-sm ${
+            selectedStatus === 'UNRESOLVED'
+              ? 'border-[#f59e0b] bg-[#f59e0b]/10 dark:bg-[#f59e0b]/15 ring-1 ring-[#f59e0b]/40'
+              : 'border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#0f0f12] hover:border-[#f59e0b]/50'
+          }`}
         >
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">
@@ -1594,7 +1621,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             {summary.unresolved}
           </div>
           <p className="mt-1 text-[11px] font-mono text-slate-500 dark:text-slate-400">
-            Pending operator action
+            {selectedStatus === 'UNRESOLVED' ? 'Filtering active (Click to clear)' : 'Pending operator action'}
           </p>
         </div>
       </section>
@@ -2131,6 +2158,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
               className="bg-transparent text-xs text-slate-800 dark:text-slate-200 outline-none [color-scheme:dark]"
             >
               <option value="ALL">All Statuses</option>
+              <option value="UNRESOLVED">Unresolved Only ({summary.unresolved})</option>
               <option value="NEW">New</option>
               <option value="REVIEWED">Reviewed</option>
               <option value="RESOLVED">Resolved</option>

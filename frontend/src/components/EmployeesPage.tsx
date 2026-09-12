@@ -560,12 +560,12 @@ export const EmployeesPage: React.FC = () => {
             {existingTemplates && (
               <div className="p-3 rounded-xl bg-black/[0.03] dark:bg-black/30 border border-black/[0.08] dark:border-white/[0.08]">
                 <div className="text-[11px] font-mono uppercase text-[#8c8c8c] dark:text-[#71717a] mb-2 flex items-center justify-between">
-                  <span>Enrolled Face Angles ({existingTemplates.faceTemplates.length})</span>
+                  <span>Enrolled Face Angles ({(existingTemplates.faceTemplates || []).length})</span>
                   <span className="text-orange-400">Frontal + Left + Right recommended</span>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {['FRONTAL', 'LEFT_PROFILE', 'RIGHT_PROFILE'].map((pose) => {
-                    const match = existingTemplates.faceTemplates.find((t) => t.poseAngle === pose);
+                    const match = (existingTemplates.faceTemplates || []).find((t) => t.poseAngle === pose);
                     return (
                       <div
                         key={pose}

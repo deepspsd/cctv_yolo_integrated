@@ -171,7 +171,31 @@ export const employeeService = {
   async getTemplates(employeeId: string): Promise<{ faceTemplates: FaceTemplate[]; bodyTemplates: BodyTemplate[] }> {
     const res = await apiFetch(`/employees/${employeeId}/templates`);
     if (!res.ok) throw new Error('Failed to fetch biometric templates');
-    return res.json();
+    const raw = await res.json();
+    if (Array.isArray(raw)) {
+      const faceTemplates: FaceTemplate[] = raw
+        .filter((t: any) => t.type === 'face')
+        .map((t: any) => ({
+          id: t.id,
+          poseAngle: t.pose || t.poseAngle || 'FRONTAL',
+          qualityScore: t.qualityScore ?? 1.0,
+          sourceCamera: t.cameraId || t.sourceCamera || null,
+          createdAt: t.createdAt || new Date().toISOString(),
+        }));
+      const bodyTemplates: BodyTemplate[] = raw
+        .filter((t: any) => t.type === 'body')
+        .map((t: any) => ({
+          id: t.id,
+          qualityScore: t.qualityScore ?? 1.0,
+          sourceCamera: t.cameraId || t.sourceCamera || null,
+          createdAt: t.createdAt || new Date().toISOString(),
+        }));
+      return { faceTemplates, bodyTemplates };
+    }
+    return {
+      faceTemplates: Array.isArray(raw?.faceTemplates) ? raw.faceTemplates : [],
+      bodyTemplates: Array.isArray(raw?.bodyTemplates) ? raw.bodyTemplates : [],
+    };
   },
 
   async deleteTemplate(templateId: string, type: 'face' | 'body'): Promise<void> {

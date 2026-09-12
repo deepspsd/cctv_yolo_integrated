@@ -315,6 +315,13 @@ export default function App() {
     return { total, online, offline, currentlyViewing };
   }, [cameras, isViewerOpen, selectedCamera]);
 
+  // Unresolved alerts count for notification badges (decreases dynamically as alerts are resolved)
+  const unresolvedAlertsCount = useMemo(() => {
+    return alerts.filter(
+      (a) => (a.status || 'NEW').toUpperCase() !== 'RESOLVED'
+    ).length;
+  }, [alerts]);
+
   // Dynamically populated zones
   const availableZones = useMemo(() => {
     const zoneSet = new Set<string>();
@@ -617,7 +624,7 @@ export default function App() {
         activeSection={currentView}
         onlineCount={summary.online}
         totalCount={summary.total}
-        alertCount={alerts.length}
+        alertCount={unresolvedAlertsCount}
         currentUser={currentUser}
         onSignOut={handleSignOut}
         onNavigate={handleNavigate}

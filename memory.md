@@ -1,6 +1,22 @@
 # Memory - CCTV Priya Textiles
 
-## Current Status
+- Fixed Alert Notification Count Badge to Dynamically Decrease Upon Resolution:
+  - Root Cause: `App.tsx` passed `alertCount={alerts.length}` to `Navbar.tsx`. Because `alerts.length` counts all events in the system (including resolved incidents), the notification badge on the Menu button (`52`) and inside the drawer (`52 New Alerts`) never decreased when an operator resolved an incident.
+  - Solution:
+    - Added `unresolvedAlertsCount` memo in `App.tsx`: `alerts.filter((a) => (a.status || 'NEW').toUpperCase() !== 'RESOLVED').length`.
+    - Passed `alertCount={unresolvedAlertsCount}` to `Navbar`. Resolving an incident immediately decreases the notification badge (52 → 51 → 50...). Badge hides automatically when count reaches 0.
+    - Added dynamic status update to `historicalAlerts` in `AlertsPage.tsx` so calendar/date-filtered alerts also update status instantly.
+    - Updated `AlertsPage.tsx` header with dynamic status beacon and `${summary.unresolved} Pending` badge (`All Resolved ✓` when 0).
+    - Made Card 4 ("Unresolved") interactive: clicking toggles `UNRESOLVED` filter with active amber ring and filter indicator.
+    - Added `Unresolved Only` option to secondary status filter dropdown.
+    - Verified clean build (`npm run build`).
+- Fixed Alerts & Employees Frontend Runtime Errors:
+  - Fixed `AlertsPage.tsx:993 Failed to load date anomalies from backend: Error: Failed to load anomalies: Unprocessable Entity` (HTTP 422):
+    - Root Cause: FastAPI endpoint `GET /api/anomalies` enforced parameter ceiling `limit: int = Query(100, ge=1, le=500)`. When user picked a date on the calendar, `AlertsPage.tsx` requested `limit: 1000` to load all incidents, triggering HTTP 422.
+    - Fix: Updated `limit: int = Query(100, ge=1, le=2000)` in `backend/app/routes/anomalies.py`. Tested with JWT authentication, returns HTTP 200 OK.
+  - Fixed `EmployeesPage.tsx:563 Uncaught TypeError: Cannot read properties of undefined (reading 'length')`:
+    - Root Cause: Backend endpoint `GET /api/employees/{id}/templates` returns a flat array of `TemplateMetadataResponse` objects. `employeeService.ts` returned raw payload without normalizing into `{ faceTemplates, bodyTemplates }`, causing `existingTemplates.faceTemplates` to be undefined.
+    - Fix: Updated `getTemplates` in `employeeService.ts` to categorize raw array into `faceTemplates` and `bodyTemplates`. Added null-safe defensive guards `(existingTemplates.faceTemplates || []).length` and `.find(...)` in `EmployeesPage.tsx`. Verified with successful `npm run build` (0 errors).
 - Completed & Deployed Database Photo Encryption & Anti-Leak Privacy Architecture:
   - Database schema updated: `AnomalyEvent.encrypted_image` (`BLOB` / `LargeBinary`) added with AES-256-GCM authenticated encryption.
   - Backfilled and encrypted all 58 historical incident evidence photos directly into SQLite database `cctv.db` using `encrypt_bytes(data)`.
