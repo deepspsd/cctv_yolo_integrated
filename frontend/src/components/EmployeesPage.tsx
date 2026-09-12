@@ -15,6 +15,7 @@ import {
   Sparkles,
   Info,
   CheckCircle2,
+  User,
 } from 'lucide-react';
 import { Employee, FaceTemplate, BodyTemplate } from '../types';
 import { employeeService, CreateEmployeePayload } from '../services/employeeService';
@@ -41,7 +42,8 @@ export const EmployeesPage: React.FC = () => {
   const [formError, setFormError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Face Enrollment State
+  // Face & Body Enrollment State
+  const [enrollMode, setEnrollMode] = useState<'FACE' | 'BODY'>('FACE');
   const [enrollPose, setEnrollPose] = useState<string>('FRONTAL');
   const [enrollImageBase64, setEnrollImageBase64] = useState<string | null>(null);
   const [enrollStatus, setEnrollStatus] = useState<string | null>(null);
@@ -128,6 +130,8 @@ export const EmployeesPage: React.FC = () => {
 
   const openEnrollmentModal = async (emp: Employee) => {
     setEnrollModalEmployee(emp);
+    setEnrollMode('FACE');
+    setEnrollPose('FRONTAL');
     setEnrollImageBase64(null);
     setEnrollStatus(null);
     setEnrollError(null);
@@ -152,21 +156,26 @@ export const EmployeesPage: React.FC = () => {
     reader.readAsDataURL(file);
   };
 
-  const handleEnrollFace = async () => {
+  const handleEnroll = async () => {
     if (!enrollModalEmployee || !enrollImageBase64) return;
     setIsEnrolling(true);
     setEnrollStatus(null);
     setEnrollError(null);
     soundService.playTactileBlip(860, 0.03);
     try {
-      const res = await employeeService.enrollFace(enrollModalEmployee.id, enrollImageBase64, enrollPose);
-      setEnrollStatus(`Enrolled! Quality Score: ${(res.qualityScore * 100).toFixed(1)}% (${res.qualityCategory})`);
+      if (enrollMode === 'FACE') {
+        const res = await employeeService.enrollFace(enrollModalEmployee.id, enrollImageBase64, enrollPose);
+        setEnrollStatus(`Face template enrolled! Quality: ${(res.qualityScore * 100).toFixed(1)}% (${res.qualityCategory})`);
+      } else {
+        await employeeService.enrollBody(enrollModalEmployee.id, enrollImageBase64);
+        setEnrollStatus('Body Re-ID profile enrolled successfully!');
+      }
       setEnrollImageBase64(null);
       const updatedTemplates = await employeeService.getTemplates(enrollModalEmployee.id);
       setExistingTemplates(updatedTemplates);
       await loadEmployees();
     } catch (err: any) {
-      setEnrollError(err.message || 'Face enrollment failed. Ensure face is clear and well lit.');
+      setEnrollError(err.message || `${enrollMode === 'FACE' ? 'Face' : 'Body Re-ID'} enrollment failed.`);
     } finally {
       setIsEnrolling(false);
     }
@@ -541,7 +550,7 @@ export const EmployeesPage: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <CameraIcon className="w-5 h-5 text-cyan-400" />
                   <h3 className="font-bold text-base text-[#0a0a0a] dark:text-white">
-                    Enroll Biometric Face
+                    Biometric & Re-ID Enrollment
                   </h3>
                 </div>
                 <p className="text-xs text-[#8c8c8c] dark:text-[#71717a] font-mono mt-0.5">
@@ -556,12 +565,12 @@ export const EmployeesPage: React.FC = () => {
               </button>
             </div>
 
-            {/* Existing Enrolled Angles */}
+            {/* Existing Enrolled Templates Summary */}
             {existingTemplates && (
-              <div className="p-3 rounded-xl bg-black/[0.03] dark:bg-black/30 border border-black/[0.08] dark:border-white/[0.08]">
-                <div className="text-[11px] font-mono uppercase text-[#8c8c8c] dark:text-[#71717a] mb-2 flex items-center justify-between">
+              <div className="p-3 rounded-xl bg-black/[0.03] dark:bg-black/30 border border-black/[0.08] dark:border-white/[0.08] space-y-2">
+                <div className="text-[11px] font-mono uppercase text-[#8c8c8c] dark:text-[#71717a] flex items-center justify-between">
                   <span>Enrolled Face Angles ({(existingTemplates.faceTemplates || []).length})</span>
-                  <span className="text-orange-400">Frontal + Left + Right recommended</span>
+                  <span className="text-orange-400">Frontal + Left + Right</span>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {['FRONTAL', 'LEFT_PROFILE', 'RIGHT_PROFILE'].map((pose) => {
@@ -582,40 +591,107 @@ export const EmployeesPage: React.FC = () => {
                     );
                   })}
                 </div>
+
+                {/* Body Re-ID Template Status */}
+                <div className="pt-2 border-t border-black/[0.05] dark:border-white/[0.05] flex items-center justify-between text-xs font-mono">
+                  <span className="text-[#8c8c8c] dark:text-[#71717a]">Body Re-ID Profiles:</span>
+                  <span className={(existingTemplates.bodyTemplates || []).length > 0 ? 'text-emerald-400 font-bold' : 'text-slate-500'}>
+                    {(existingTemplates.bodyTemplates || []).length > 0 ? (
+                      `✓ ${(existingTemplates.bodyTemplates || []).length} Full-Body Profile Enrolled`
+                    ) : (
+                      'No Body Re-ID uploaded yet'
+                    )}
+                  </span>
+                </div>
               </div>
             )}
 
-            {/* Pose Selector */}
+            {/* Modality Selector: Face vs Body */}
             <div>
               <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
-                Select Head Pose Angle
+                Biometric Modality
               </label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: 'FRONTAL', label: 'Frontal (0°)' },
-                  { id: 'LEFT_PROFILE', label: 'Left (~30°)' },
-                  { id: 'RIGHT_PROFILE', label: 'Right (~30°)' },
-                ].map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setEnrollPose(p.id)}
-                    className={`py-2 px-2 text-xs font-mono rounded-xl border transition cursor-pointer ${
-                      enrollPose === p.id
-                        ? 'border-cyan-500 bg-cyan-500/15 text-cyan-400 font-bold'
-                        : 'border-black/[0.08] dark:border-white/[0.08] text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                ))}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEnrollMode('FACE');
+                    setEnrollImageBase64(null);
+                    setEnrollStatus(null);
+                    setEnrollError(null);
+                  }}
+                  className={`py-2 px-3 text-xs font-mono rounded-xl border flex items-center justify-center gap-2 transition cursor-pointer ${
+                    enrollMode === 'FACE'
+                      ? 'border-cyan-500 bg-cyan-500/15 text-cyan-400 font-bold'
+                      : 'border-black/[0.08] dark:border-white/[0.08] text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <CameraIcon className="w-3.5 h-3.5" />
+                  <span>Face Biometrics</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEnrollMode('BODY');
+                    setEnrollImageBase64(null);
+                    setEnrollStatus(null);
+                    setEnrollError(null);
+                  }}
+                  className={`py-2 px-3 text-xs font-mono rounded-xl border flex items-center justify-center gap-2 transition cursor-pointer ${
+                    enrollMode === 'BODY'
+                      ? 'border-orange-500 bg-orange-500/15 text-orange-400 font-bold'
+                      : 'border-black/[0.08] dark:border-white/[0.08] text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <User className="w-3.5 h-3.5" />
+                  <span>Body Re-ID</span>
+                </button>
               </div>
             </div>
+
+            {/* If Face Mode: Pose Selector */}
+            {enrollMode === 'FACE' && (
+              <div>
+                <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
+                  Select Head Pose Angle
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: 'FRONTAL', label: 'Frontal (0°)' },
+                    { id: 'LEFT_PROFILE', label: 'Left (~30°)' },
+                    { id: 'RIGHT_PROFILE', label: 'Right (~30°)' },
+                  ].map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => setEnrollPose(p.id)}
+                      className={`py-2 px-2 text-xs font-mono rounded-xl border transition cursor-pointer ${
+                        enrollPose === p.id
+                          ? 'border-cyan-500 bg-cyan-500/15 text-cyan-400 font-bold'
+                          : 'border-black/[0.08] dark:border-white/[0.08] text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* If Body Mode: Helper Banner */}
+            {enrollMode === 'BODY' && (
+              <div className="p-2.5 rounded-xl border border-orange-500/30 bg-orange-500/10 text-orange-400 text-xs font-mono flex items-start gap-2">
+                <Info className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>
+                  Upload full-body standing photo or CCTV crop. Re-ID enables tracking from overhead angles or when face is obscured/masked.
+                </span>
+              </div>
+            )}
 
             {/* File Upload Box */}
             <div>
               <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
-                Face Photo (Passport or Clear CCTV Crop)
+                {enrollMode === 'FACE' ? 'Face Photo (Passport or Clear CCTV Crop)' : 'Full-Body Standing Photo (CCTV Crop or Photo)'}
               </label>
               <input
                 type="file"
@@ -647,10 +723,14 @@ export const EmployeesPage: React.FC = () => {
                 >
                   <Upload className="w-8 h-8 text-cyan-400 opacity-80" />
                   <div className="text-xs text-[#0a0a0a] dark:text-white font-medium">
-                    Click to browse or drop an employee face image
+                    {enrollMode === 'FACE'
+                      ? 'Click to browse or drop an employee face image'
+                      : 'Click to browse or drop a full-body standing photo'}
                   </div>
                   <span className="text-[10px] text-slate-400">
-                    Real-time quality filtering will reject blurry or low-res images
+                    {enrollMode === 'FACE'
+                      ? 'Real-time quality filtering will reject blurry or low-res images'
+                      : 'Extracts spatial color pyramid & structural texture for FastReID'}
                   </span>
                 </div>
               )}
@@ -681,7 +761,7 @@ export const EmployeesPage: React.FC = () => {
               <button
                 type="button"
                 disabled={!enrollImageBase64 || isEnrolling}
-                onClick={handleEnrollFace}
+                onClick={handleEnroll}
                 className="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-black font-bold cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
               >
                 {isEnrolling ? (
@@ -692,7 +772,9 @@ export const EmployeesPage: React.FC = () => {
                 ) : (
                   <>
                     <ShieldCheck className="w-4 h-4" />
-                    <span>Extract & Save Template</span>
+                    <span>
+                      {enrollMode === 'FACE' ? 'Extract & Save Face Template' : 'Extract & Save Body Re-ID'}
+                    </span>
                   </>
                 )}
               </button>
