@@ -1,5 +1,17 @@
 # Memory - CCTV Priya Textiles
 
+- Employee Biometric Identification Linked to YOLO Anomaly Alerts:
+  - Feature: When YOLO detects safety violations (`NO_HARDHAT`, `NO_MASK`, `NO_SAFETY_VEST`), the person bounding box is extracted and matched against enrolled face and body Re-ID templates from the Employees section.
+  - Identification Pipeline:
+    - `SurveillanceBatchWorker.process_camera_frame` extracts person body crops and face regions (`reid_pipeline.extract_body_crop`, `face_pipeline.extract_face_region`).
+    - Compares features against `identity_fusion.employee_face_templates` and `employee_body_templates`, assigning `employee_id` and `employee_name` to person tracks.
+    - `associate_ppe_to_persons` links PPE violation boxes to person tracks, passing employee identity to observations.
+    - `ai_state_machine.py` creates formatted alert message: `f"{rec.employee_name} has not worn {friendly_ppe}"` (e.g. `"John Doe has not worn headcap / hardhat"`), burns the employee name label directly onto the encrypted evidence image, and stores `employee_id` in `AnomalyEvent`.
+    - `backend/app/routes/anomalies.py`: Added `Employee` outerjoin in `list_anomalies` (`GET /api/anomalies`) and status update to guarantee `employee_id` and `employee_name` are populated in historical queries.
+    - `frontend/src/App.tsx`: WebSocket handler parses `employeeId`, `employeeName`, and `alertMessage`, displaying toast: `"John Doe has not worn headcap / hardhat"`.
+    - `frontend/src/components/AlertsPage.tsx`: Incident Evidence Cards, Evidence Inspector Modal, and Table View display named violation message (`XXX has not worn headcap / hardhat`), orange staff badge pill (`Staff: XXX` vs `Unidentified`), and search filtering across employee names and alert messages.
+  - Verified with clean frontend build (`npm run build`).
+
 - Fixed Alert Notification Count Badge to Dynamically Decrease Upon Resolution:
   - Root Cause: `App.tsx` passed `alertCount={alerts.length}` to `Navbar.tsx`. Because `alerts.length` counts all events in the system (including resolved incidents), the notification badge on the Menu button (`52`) and inside the drawer (`52 New Alerts`) never decreased when an operator resolved an incident.
   - Solution:

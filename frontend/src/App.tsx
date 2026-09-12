@@ -285,6 +285,9 @@ export default function App() {
           confidence: raw.confidence ?? 0.85,
           severity: raw.severity || (raw.anomaly_type && (raw.anomaly_type.includes('NO_') || raw.anomaly_type.includes('HAZARD')) ? 'HIGH' : 'MEDIUM'),
           trackId: raw.trackId ?? raw.track_id,
+          employeeId: raw.employeeId || raw.employee_id || null,
+          employeeName: raw.employeeName || raw.employee_name || null,
+          alertMessage: raw.alertMessage || raw.alert_message || null,
           firstSeenAt: raw.firstSeenAt || raw.first_seen_at || new Date().toISOString(),
           confirmedAt: raw.confirmedAt || raw.confirmed_at || raw.timestamp || new Date().toISOString(),
           endedAt: raw.endedAt || raw.ended_at,
@@ -299,7 +302,8 @@ export default function App() {
           if (prev.some((a) => a.id === newAlert.id)) return prev;
           return [newAlert, ...prev];
         });
-        addToast(`🚨 AI Alert: ${newAlert.anomalyType} on ${newAlert.cameraName}!`, 'error');
+        const toastMsg = newAlert.alertMessage || `🚨 AI Alert: ${newAlert.anomalyType} on ${newAlert.cameraName}!`;
+        addToast(toastMsg, 'error');
       }
     });
 

@@ -8,7 +8,7 @@ from sqlalchemy import select, func, desc, asc
 from jose import JWTError
 
 from app.database import get_db
-from app.models import AnomalyEvent, Camera, User
+from app.models import AnomalyEvent, Camera, User, Employee
 from app.dependencies import get_current_user
 from app.auth import decode_access_token
 from app.security import decrypt_bytes
@@ -39,10 +39,10 @@ def format_anomaly(evt: AnomalyEvent, camera_name: Optional[str] = None, employe
         display_status = "NEW"
 
     ppe_friendly_names = {
-        "NO_HARDHAT": "hardhat",
-        "NO_MASK": "mask",
+        "NO_HARDHAT": "headcap / hardhat",
+        "NO_MASK": "protective mask",
         "NO_SAFETY_VEST": "safety vest",
-        "PHONE_VIOLATION": "phone",
+        "PHONE_VIOLATION": "mobile phone in prohibited zone",
         "MACHINERY_HAZARD": "heavy machinery safety boundary"
     }
     friendly_ppe = ppe_friendly_names.get(evt.anomaly_type, evt.anomaly_type.lower().replace("_", " "))
@@ -141,8 +141,14 @@ async def list_anomalies(
     List historical anomaly events with multi-criteria filtering and camera join.
     Strictly scoped to the authenticated user. Excludes PERSON_DETECTED.
     """
-    query = select(AnomalyEvent, Camera.name.label("camera_name")).join(
+    query = select(
+        AnomalyEvent,
+        Camera.name.label("camera_name"),
+        Employee.name.label("employee_name")
+    ).join(
         Camera, AnomalyEvent.camera_id == Camera.id
+    ).outerjoin(
+        Employee, AnomalyEvent.employee_id == Employee.id
     ).where(
         (AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id),
         AnomalyEvent.anomaly_type != "PERSON_DETECTED"
@@ -185,7 +191,7 @@ async def list_anomalies(
     result = await db.execute(query)
     rows = result.all()
 
-    return [format_anomaly(evt, camera_name) for evt, camera_name in rows]
+    return [format_anomaly(evt, camera_name, employee_name) for evt, camera_name, employee_name in rows]
 
 @router.get("/dates")
 async def list_evidence_dates(
@@ -381,7 +387,12 @@ async def update_anomaly_status(
         cam_res = await db.execute(select(Camera.name).where(Camera.id == evt.camera_id))
         cam_name = cam_res.scalar_one_or_none()
 
-    return format_anomaly(evt, camera_name=cam_name)
+    emp_name = None
+    if evt.employee_id:
+        emp_res = await db.execute(select(Employee.name).where(Employee.id == evt.employee_id))
+        emp_name = emp_res.scalar_one_or_none()
+
+    return format_anomaly(evt, camera_name=cam_name, employee_name=emp_name)
 
 @router.delete("/{id}")
 async def delete_anomaly(

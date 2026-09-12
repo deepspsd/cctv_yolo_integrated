@@ -33,6 +33,7 @@ import {
   FolderOpen,
   Grid,
   Trash2,
+  User,
 } from 'lucide-react';
 import { AnomalyAlertEvent, Camera } from '../types';
 import { anomalyService } from '../services/anomalyService';
@@ -595,15 +596,29 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
               {/* Violation Heading */}
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest text-[#f97316]">
-                  Anomaly Classification
+                  Anomaly Classification & Identity
                 </div>
                 <h3 className="mt-1 text-xl font-bold text-white tracking-tight flex items-center gap-2">
                   <SevIcon className={`h-5 w-5 ${sevTheme.text}`} />
-                  {formatAnomalyLabel(currentAlert.anomalyType)}
+                  {currentAlert.employeeName && currentAlert.employeeName !== 'Unidentified person'
+                    ? `${currentAlert.employeeName} has not worn ${formatAnomalyLabel(currentAlert.anomalyType).toLowerCase()}`
+                    : currentAlert.alertMessage || formatAnomalyLabel(currentAlert.anomalyType)}
                 </h3>
-                <p className="mt-0.5 text-xs text-slate-400">
-                  Category: {currentAlert.eventCategory || 'VIOLATION'}
-                </p>
+                <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+                  <span className="text-xs text-slate-400">
+                    Category: {currentAlert.eventCategory || 'VIOLATION'}
+                  </span>
+                  {currentAlert.employeeName && currentAlert.employeeName !== 'Unidentified person' ? (
+                    <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30 flex items-center gap-1">
+                      <User className="w-3 h-3" />
+                      Staff: {currentAlert.employeeName}
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[11px] font-mono text-slate-500 bg-white/5 border border-white/10">
+                      Unidentified Person
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* Primary Telemetry Grid */}
@@ -864,14 +879,30 @@ const IncidentEvidenceCard: React.FC<IncidentEvidenceCardProps> = ({
         {/* Card Body Info */}
         <div className="p-3">
           <div className="flex items-start justify-between gap-1.5">
-            <div className="min-w-0">
-              <h4 className="font-semibold text-[13px] text-[#0a0a0a] dark:text-white tracking-tight truncate flex items-center gap-1.5">
+            <div className="min-w-0 flex-1">
+              <h4 className="font-semibold text-[13px] text-[#0a0a0a] dark:text-white tracking-tight flex items-center gap-1.5">
                 <SevIcon className={`w-3.5 h-3.5 shrink-0 ${sevTheme.text}`} />
-                <span>{formatAnomalyLabel(alert.anomalyType)}</span>
+                <span className="truncate">
+                  {alert.employeeName && alert.employeeName !== 'Unidentified person'
+                    ? `${alert.employeeName} has not worn ${formatAnomalyLabel(alert.anomalyType).toLowerCase()}`
+                    : alert.alertMessage || formatAnomalyLabel(alert.anomalyType)}
+                </span>
               </h4>
-              <p className="text-[11px] font-mono text-[#8c8c8c] dark:text-[#71717a] truncate mt-0.5">
-                {alert.cameraName || alert.cameraId} • {Math.round((alert.confidence || 0) * 100)}% Conf
-              </p>
+              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                {alert.employeeName && alert.employeeName !== 'Unidentified person' ? (
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-orange-500/15 text-orange-500 dark:text-orange-400 border border-orange-500/30">
+                    <User className="w-2.5 h-2.5" />
+                    {alert.employeeName}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono text-slate-500 bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5">
+                    Unidentified
+                  </span>
+                )}
+                <span className="text-[11px] font-mono text-[#8c8c8c] dark:text-[#71717a] truncate">
+                  {alert.cameraName || alert.cameraId} • {Math.round((alert.confidence || 0) * 100)}% Conf
+                </span>
+              </div>
             </div>
 
             <span
@@ -1040,6 +1071,9 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
           eventCategory: raw.eventCategory || raw.event_category || 'VIOLATION',
           anomalyType: raw.anomalyType || raw.anomaly_type || 'ANOMALY',
           trackId: raw.trackId ?? raw.track_id,
+          employeeId: raw.employeeId || raw.employee_id || null,
+          employeeName: raw.employeeName || raw.employee_name || null,
+          alertMessage: raw.alertMessage || raw.alert_message || null,
           confirmedAt: raw.confirmedAt || raw.confirmed_at || raw.createdAt || raw.created_at || raw.timestamp,
           createdAt: raw.createdAt || raw.created_at || raw.confirmedAt || raw.confirmed_at || raw.timestamp,
           snapshotPath: raw.snapshotPath || raw.snapshot_path || null,
@@ -1294,7 +1328,9 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
           const matchZone = (alert.zone || '').toLowerCase().includes(q);
           const matchType = (alert.anomalyType || '').toLowerCase().includes(q);
           const matchTrack = alert.trackId !== undefined && String(alert.trackId).includes(q);
-          if (!matchCam && !matchZone && !matchType && !matchTrack) {
+          const matchEmp = (alert.employeeName || '').toLowerCase().includes(q);
+          const matchMsg = (alert.alertMessage || '').toLowerCase().includes(q);
+          if (!matchCam && !matchZone && !matchType && !matchTrack && !matchEmp && !matchMsg) {
             return false;
           }
         }
@@ -2403,10 +2439,17 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
                           <SevIcon className={`h-4 w-4 shrink-0 ${sevTheme.text}`} />
                           <div>
                             <span className="font-bold text-slate-900 dark:text-white">
-                              {formatAnomalyLabel(alert.anomalyType)}
+                              {alert.employeeName && alert.employeeName !== 'Unidentified person'
+                                ? `${alert.employeeName} has not worn ${formatAnomalyLabel(alert.anomalyType).toLowerCase()}`
+                                : alert.alertMessage || formatAnomalyLabel(alert.anomalyType)}
                             </span>
-                            <div className="text-[10px] font-mono text-slate-500">
-                              Confidence: {Math.round((alert.confidence || 0) * 100)}%
+                            <div className="text-[10px] font-mono text-slate-500 flex items-center gap-1.5 mt-0.5">
+                              <span>Conf: {Math.round((alert.confidence || 0) * 100)}%</span>
+                              {alert.employeeName && alert.employeeName !== 'Unidentified person' ? (
+                                <span className="text-orange-500 dark:text-orange-400 font-bold">• {alert.employeeName}</span>
+                              ) : (
+                                <span className="text-slate-400">• Unidentified</span>
+                              )}
                             </div>
                           </div>
                         </div>

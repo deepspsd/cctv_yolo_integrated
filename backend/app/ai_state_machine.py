@@ -118,10 +118,10 @@ class AnomalyStateMachine:
 
                     # Derive named alert message
                     ppe_friendly_names = {
-                        "NO_HARDHAT": "hardhat",
-                        "NO_MASK": "mask",
+                        "NO_HARDHAT": "headcap / hardhat",
+                        "NO_MASK": "protective mask",
                         "NO_SAFETY_VEST": "safety vest",
-                        "PHONE_VIOLATION": "phone",
+                        "PHONE_VIOLATION": "mobile phone in prohibited zone",
                         "MACHINERY_HAZARD": "heavy machinery safety boundary"
                     }
                     friendly_ppe = ppe_friendly_names.get(a_type, a_type.lower().replace("_", " "))
