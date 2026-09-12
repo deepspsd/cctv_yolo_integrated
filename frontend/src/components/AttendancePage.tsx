@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   CalendarCheck,
   Users,
@@ -14,15 +14,42 @@ import {
   FileSpreadsheet,
   FileText,
   Calendar,
+  CalendarDays,
   Building,
   UserCheck,
   AlertOctagon,
   ArrowUpDown,
   X,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  Sparkles,
 } from 'lucide-react';
 import { AttendanceRecord, AttendanceSummary, Camera } from '../types';
 import { attendanceService } from '../services/attendanceService';
 import { soundService } from '../services/soundService';
+
+const formatDisplayDate = (iso?: string | null): string => {
+  if (!iso) return 'Select Date';
+  const parts = iso.split('-');
+  if (parts.length === 3) {
+    const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      });
+    }
+  }
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+};
 
 interface AttendancePageProps {
   cameras?: Camera[];
@@ -41,6 +68,101 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ cameras = [] }) 
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
+
+  // ─── Interactive Calendar Popover State & Helpers ───────────────────────────
+  const todayKey = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }, []);
+
+  const yesterdayKey = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }, []);
+
+  const [isCalendarOpen, setIsCalendarOpen] = useState<boolean>(false);
+  const calendarRef = useRef<HTMLDivElement>(null);
+  const [calendarViewDate, setCalendarViewDate] = useState<Date>(() => new Date());
+
+  // Sync calendar view month when selectedDate changes
+  useEffect(() => {
+    if (selectedDate) {
+      const parts = selectedDate.split('-');
+      if (parts.length === 3) {
+        const y = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        setCalendarViewDate(new Date(y, m, 1));
+      }
+    }
+  }, [selectedDate]);
+
+  // Click outside to close calendar popover
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (calendarRef.current && !calendarRef.current.contains(event.target as Node)) {
+        setIsCalendarOpen(false);
+      }
+    };
+    if (isCalendarOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isCalendarOpen]);
+
+  // Escape key to dismiss calendar popover
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isCalendarOpen) {
+        setIsCalendarOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isCalendarOpen]);
+
+  // Generate 35-42 calendar day cells for current view month
+  const calendarGrid = useMemo(() => {
+    const year = calendarViewDate.getFullYear();
+    const month = calendarViewDate.getMonth();
+
+    const firstDayOfWeek = new Date(year, month, 1).getDay(); // 0 = Sun
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const prevMonthDays = new Date(year, month, 0).getDate();
+
+    const cells: Array<{ day: number; isCurrentMonth: boolean; dateKey: string }> = [];
+
+    // Leading days from previous month
+    for (let i = firstDayOfWeek - 1; i >= 0; i--) {
+      const d = prevMonthDays - i;
+      const prevDate = new Date(year, month - 1, d);
+      const key = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      cells.push({ day: d, isCurrentMonth: false, dateKey: key });
+    }
+
+    // Days in current month
+    for (let d = 1; d <= daysInMonth; d++) {
+      const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      cells.push({ day: d, isCurrentMonth: true, dateKey: key });
+    }
+
+    // Trailing days to round to complete weeks (35 or 42)
+    const targetLength = cells.length > 35 ? 42 : 35;
+    const remaining = targetLength - cells.length;
+    for (let d = 1; d <= remaining; d++) {
+      const nextDate = new Date(year, month + 1, d);
+      const key = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      cells.push({ day: d, isCurrentMonth: false, dateKey: key });
+    }
+
+    return cells;
+  }, [calendarViewDate]);
+
+  const viewMonthLabel = useMemo(() => {
+    return calendarViewDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  }, [calendarViewDate]);
 
   const loadData = async () => {
     setIsLoading(true);
@@ -258,15 +380,196 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ cameras = [] }) 
 
         {/* Filters & View Switcher */}
         <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-          {/* Date Picker */}
-          <div className="relative flex items-center">
-            <Calendar className="absolute left-3 w-3.5 h-3.5 text-orange-400 pointer-events-none" />
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              className="pl-8 pr-2.5 py-2 text-[13px] font-mono rounded-xl bg-[#fbfbfb] dark:bg-[#171720] border border-black/[0.1] dark:border-white/[0.1] text-[#0a0a0a] dark:text-white focus:outline-none focus:border-orange-500 cursor-pointer"
-            />
+          {/* Awesome Interactive Calendar Component */}
+          <div className="relative" ref={calendarRef}>
+            <button
+              type="button"
+              onClick={() => {
+                soundService.playTactileBlip(750, 0.02);
+                setIsCalendarOpen((prev) => !prev);
+              }}
+              className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition cursor-pointer shadow-xs ${
+                selectedDate
+                  ? 'border-orange-500/60 bg-orange-500/10 text-orange-500 dark:text-orange-400 ring-1 ring-orange-500/30'
+                  : 'border-black/10 dark:border-white/10 bg-[#fbfbfb] dark:bg-[#171720] text-slate-700 dark:text-slate-300 hover:border-orange-500/40 dark:hover:border-white/20'
+              }`}
+              title="Open Attendance Date Calendar"
+            >
+              <CalendarDays className={`h-4 w-4 shrink-0 ${selectedDate ? 'text-orange-500' : 'text-slate-400'}`} />
+              <span className="tracking-tight select-none">
+                {formatDisplayDate(selectedDate)}
+              </span>
+
+              {/* Today Badge if today is selected */}
+              {selectedDate === todayKey && (
+                <span className="rounded bg-orange-500/20 px-1.5 py-0.5 font-mono text-[9.5px] font-bold text-orange-400 border border-orange-500/30">
+                  TODAY
+                </span>
+              )}
+
+              <ChevronDown
+                className={`h-3.5 w-3.5 text-slate-400 transition-transform duration-200 ${
+                  isCalendarOpen ? 'rotate-180 text-orange-500' : ''
+                }`}
+              />
+            </button>
+
+            {/* Custom Awesome Calendar Dropdown Popover */}
+            {isCalendarOpen && (
+              <div
+                className="absolute left-0 sm:left-auto sm:right-0 md:left-0 top-full mt-2 z-50 w-[310px] sm:w-[340px] overflow-hidden rounded-2xl border border-orange-500/30 bg-[#090b10] p-4 text-slate-100 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-xl animate-fadeIn"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Micro Scanline & Grid Background */}
+                <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,#ffffff04_1px,transparent_1px),linear-gradient(to_bottom,#ffffff04_1px,transparent_1px)] bg-[size:12px_12px] opacity-30" />
+                <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,transparent_50%,rgba(0,0,0,0.35)_51%)] bg-[length:100%_4px] opacity-20" />
+
+                <div className="relative z-10">
+                  {/* Popover Header: Month Navigation */}
+                  <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundService.playTactileBlip(650, 0.02);
+                        setCalendarViewDate(
+                          (prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1)
+                        );
+                      }}
+                      className="p-1.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-lg transition cursor-pointer"
+                      title="Previous month"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </button>
+
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-sm text-white tracking-tight">
+                        {viewMonthLabel}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundService.playTactileBlip(800, 0.02);
+                          const now = new Date();
+                          setCalendarViewDate(new Date(now.getFullYear(), now.getMonth(), 1));
+                          setSelectedDate(todayKey);
+                          setIsCalendarOpen(false);
+                        }}
+                        className="px-2 py-1 text-[10px] font-mono font-bold uppercase rounded-md border border-orange-500/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 transition cursor-pointer"
+                        title="Jump to today"
+                      >
+                        Today
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundService.playTactileBlip(650, 0.02);
+                          setCalendarViewDate(
+                            (prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1)
+                          );
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-lg transition cursor-pointer"
+                        title="Next month"
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Day of Week Headers */}
+                  <div className="grid grid-cols-7 gap-1 pt-3 pb-1 text-center font-mono text-[10.5px] font-bold text-slate-500 uppercase tracking-wider">
+                    <span>Su</span>
+                    <span>Mo</span>
+                    <span>Tu</span>
+                    <span>We</span>
+                    <span>Th</span>
+                    <span>Fr</span>
+                    <span>Sa</span>
+                  </div>
+
+                  {/* Days Grid */}
+                  <div className="grid grid-cols-7 gap-1 py-1">
+                    {calendarGrid.map(({ day, isCurrentMonth, dateKey }) => {
+                      const isSelected = selectedDate === dateKey;
+                      const isToday = dateKey === todayKey;
+
+                      return (
+                        <button
+                          key={dateKey}
+                          type="button"
+                          onClick={() => {
+                            soundService.playTactileBlip(820, 0.03);
+                            setSelectedDate(dateKey);
+                            setIsCalendarOpen(false);
+                          }}
+                          title={formatDisplayDate(dateKey)}
+                          className={`group relative flex flex-col items-center justify-center h-8.5 rounded-xl text-xs font-mono transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-gradient-to-br from-orange-500 to-amber-500 text-black font-bold shadow-[0_0_12px_rgba(249,115,22,0.6)] z-10'
+                              : isToday
+                              ? 'border border-orange-500/60 text-orange-400 bg-orange-500/10 font-bold'
+                              : !isCurrentMonth
+                              ? 'text-slate-600 opacity-30 hover:opacity-70 hover:bg-white/5'
+                              : 'text-slate-300 hover:text-white hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="text-[11.5px]">{day}</span>
+
+                          {/* Today dot indicator if not selected */}
+                          {isToday && !isSelected && (
+                            <span className="absolute bottom-1 h-1.5 w-1.5 rounded-full bg-orange-400 shadow-[0_0_6px_rgba(249,115,22,0.8)]" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Quick Preset Buttons */}
+                  <div className="mt-2.5 pt-2.5 border-t border-white/10 flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundService.playTactileBlip(800, 0.02);
+                          setSelectedDate(todayKey);
+                          setIsCalendarOpen(false);
+                        }}
+                        className={`px-2 py-1 rounded-lg text-[10.5px] font-mono flex items-center gap-1 transition cursor-pointer ${
+                          selectedDate === todayKey
+                            ? 'bg-orange-500 text-black font-bold'
+                            : 'bg-white/5 hover:bg-orange-500/15 text-slate-300 hover:text-white border border-white/10'
+                        }`}
+                      >
+                        <span>Today</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundService.playTactileBlip(800, 0.02);
+                          setSelectedDate(yesterdayKey);
+                          setIsCalendarOpen(false);
+                        }}
+                        className={`px-2 py-1 rounded-lg text-[10.5px] font-mono flex items-center gap-1 transition cursor-pointer ${
+                          selectedDate === yesterdayKey
+                            ? 'bg-orange-500 text-black font-bold'
+                            : 'bg-white/5 hover:bg-orange-500/15 text-slate-300 hover:text-white border border-white/10'
+                        }`}
+                      >
+                        <span>Yesterday</span>
+                      </button>
+                    </div>
+
+                    <span className="text-[10px] font-mono text-slate-400">
+                      {records.length} Records
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Department Dropdown */}
