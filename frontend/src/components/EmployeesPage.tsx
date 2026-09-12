@@ -26,6 +26,7 @@ export const EmployeesPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDepartment, setSelectedDepartment] = useState('ALL');
+  const [photoVersion, setPhotoVersion] = useState<number>(Date.now());
 
   // Modal States
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -130,16 +131,37 @@ export const EmployeesPage: React.FC = () => {
 
   const openEnrollmentModal = async (emp: Employee) => {
     setEnrollModalEmployee(emp);
-    setEnrollMode('FACE');
-    setEnrollPose('FRONTAL');
     setEnrollImageBase64(null);
     setEnrollStatus(null);
     setEnrollError(null);
     try {
       const t = await employeeService.getTemplates(emp.id);
       setExistingTemplates(t);
+      const hasFrontal = (t.faceTemplates || []).some((x) => x.poseAngle === 'FRONTAL');
+      const hasLeft = (t.faceTemplates || []).some((x) => x.poseAngle === 'LEFT_PROFILE');
+      const hasRight = (t.faceTemplates || []).some((x) => x.poseAngle === 'RIGHT_PROFILE');
+      const hasBody = (t.bodyTemplates || []).length > 0;
+
+      if (!hasFrontal) {
+        setEnrollMode('FACE');
+        setEnrollPose('FRONTAL');
+      } else if (!hasLeft) {
+        setEnrollMode('FACE');
+        setEnrollPose('LEFT_PROFILE');
+      } else if (!hasRight) {
+        setEnrollMode('FACE');
+        setEnrollPose('RIGHT_PROFILE');
+      } else if (!hasBody) {
+        setEnrollMode('BODY');
+        setEnrollPose('BODY');
+      } else {
+        setEnrollMode('FACE');
+        setEnrollPose('FRONTAL');
+      }
     } catch {
       setExistingTemplates(null);
+      setEnrollMode('FACE');
+      setEnrollPose('FRONTAL');
     }
   };
 
@@ -163,17 +185,48 @@ export const EmployeesPage: React.FC = () => {
     setEnrollError(null);
     soundService.playTactileBlip(860, 0.03);
     try {
+      let successMsg = '';
       if (enrollMode === 'FACE') {
         const res = await employeeService.enrollFace(enrollModalEmployee.id, enrollImageBase64, enrollPose);
-        setEnrollStatus(`Face template enrolled! Quality: ${(res.qualityScore * 100).toFixed(1)}% (${res.qualityCategory})`);
+        successMsg = `✓ ${enrollPose} face template enrolled! Quality: ${(res.qualityScore * 100).toFixed(0)}%`;
       } else {
         await employeeService.enrollBody(enrollModalEmployee.id, enrollImageBase64);
-        setEnrollStatus('Body Re-ID profile enrolled successfully!');
+        successMsg = '✓ Full-Body Re-ID profile enrolled!';
       }
+
+      const updatedVersion = Date.now();
+      setPhotoVersion(updatedVersion);
       setEnrollImageBase64(null);
+
       const updatedTemplates = await employeeService.getTemplates(enrollModalEmployee.id);
       setExistingTemplates(updatedTemplates);
       await loadEmployees();
+
+      // Gracious auto-progression through compulsory captures
+      if (enrollMode === 'FACE' && enrollPose === 'FRONTAL') {
+        setEnrollStatus(`${successMsg} — Frontal saved to card! Gracioulsy moving to Left Profile (~30°)...`);
+        setTimeout(() => {
+          setEnrollMode('FACE');
+          setEnrollPose('LEFT_PROFILE');
+          setEnrollStatus(null);
+        }, 850);
+      } else if (enrollMode === 'FACE' && enrollPose === 'LEFT_PROFILE') {
+        setEnrollStatus(`${successMsg} — Left Profile saved! Gracioulsy moving to Right Profile (~30°)...`);
+        setTimeout(() => {
+          setEnrollMode('FACE');
+          setEnrollPose('RIGHT_PROFILE');
+          setEnrollStatus(null);
+        }, 850);
+      } else if (enrollMode === 'FACE' && enrollPose === 'RIGHT_PROFILE') {
+        setEnrollStatus(`${successMsg} — Right Profile saved! Gracioulsy moving to Full-Body Re-ID...`);
+        setTimeout(() => {
+          setEnrollMode('BODY');
+          setEnrollPose('BODY');
+          setEnrollStatus(null);
+        }, 850);
+      } else if (enrollMode === 'BODY') {
+        setEnrollStatus('🎉 Complete! All 4/4 Biometric Profiles Enrolled! Employee is fully primed for CCTV recognition.');
+      }
     } catch (err: any) {
       setEnrollError(err.message || `${enrollMode === 'FACE' ? 'Face' : 'Body Re-ID'} enrollment failed.`);
     } finally {
@@ -317,6 +370,9 @@ export const EmployeesPage: React.FC = () => {
                 .slice(0, 2)
                 .join('') || 'ST';
             const hasBiometrics = (emp.faceTemplatesCount || 0) > 0;
+            const completeness = emp.completenessScore ?? ((emp.enrolledAngles?.length) || (hasBiometrics ? 1 : 0));
+            const isAllDone = completeness === 4;
+            const photoUrl = emp.avatarUrl ? `${emp.avatarUrl}&v=${photoVersion}` : null;
 
             return (
               <div
@@ -326,9 +382,10 @@ export const EmployeesPage: React.FC = () => {
                 {/* Visual Viewport Header with CCTV scanlines & Frontal Face */}
                 <div className="relative aspect-video w-full overflow-hidden bg-black flex flex-col justify-between p-3 select-none">
                   {/* Frontal Face Photo (Decrypted from DB) */}
-                  {emp.avatarUrl ? (
+                  {photoUrl ? (
                     <img
-                      src={emp.avatarUrl}
+                      key={`photo-${emp.id}-${photoVersion}`}
+                      src={photoUrl}
                       alt={emp.fullName}
                       className="absolute inset-0 w-full h-full object-cover object-top filter brightness-[0.92] contrast-[1.08] group-hover:scale-105 transition-transform duration-300"
                       onError={(e) => {
@@ -353,14 +410,41 @@ export const EmployeesPage: React.FC = () => {
                       </span>
                       <span
                         className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold uppercase backdrop-blur-md border flex items-center gap-1 ${
-                          hasBiometrics
-                            ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
-                            : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                          isAllDone
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                            : completeness > 0
+                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                            : 'bg-red-500/20 text-red-300 border-red-500/40'
                         }`}
                       >
                         <ShieldCheck className="w-2.5 h-2.5" />
-                        {hasBiometrics ? `${emp.faceTemplatesCount} ANGLES` : 'PENDING'}
+                        {isAllDone ? '4/4 PRIME' : `${completeness}/4 ${completeness > 0 ? 'PARTIAL' : 'MANDATORY'}`}
                       </span>
+
+                      {/* 4 Compulsory Angle Badges: F, L, R, B */}
+                      <div className="flex items-center gap-0.5">
+                        {[
+                          { id: 'FRONTAL', label: 'F', name: 'Frontal' },
+                          { id: 'LEFT_PROFILE', label: 'L', name: 'Left' },
+                          { id: 'RIGHT_PROFILE', label: 'R', name: 'Right' },
+                          { id: 'BODY', label: 'B', name: 'Body' },
+                        ].map((ang) => {
+                          const isPresent = (emp.enrolledAngles || []).includes(ang.id) || (ang.id === 'FRONTAL' && (emp.faceTemplatesCount || 0) > 0);
+                          return (
+                            <span
+                              key={ang.id}
+                              title={`${ang.name}: ${isPresent ? 'Enrolled' : 'Missing (Compulsory)'}`}
+                              className={`w-3.5 h-3.5 rounded text-[8px] font-mono font-bold flex items-center justify-center border ${
+                                isPresent
+                                  ? 'bg-emerald-500/30 text-emerald-300 border-emerald-400/50'
+                                  : 'bg-black/60 text-zinc-500 border-dashed border-zinc-600'
+                              }`}
+                            >
+                              {ang.label}
+                            </span>
+                          );
+                        })}
+                      </div>
                     </div>
 
                     <span
@@ -382,14 +466,14 @@ export const EmployeesPage: React.FC = () => {
                     {/* Fallback initials when photo is not uploaded */}
                     <div
                       className={`avatar-fallback w-14 h-14 rounded-2xl bg-gradient-to-br from-[#1a1a24] to-[#0c0c10] border border-white/20 text-orange-400 font-bold font-mono text-lg items-center justify-center shadow-lg group-hover:scale-105 transition-transform duration-200 ${
-                        emp.avatarUrl ? 'hidden' : 'flex'
+                        photoUrl ? 'hidden' : 'flex'
                       }`}
                     >
                       {initials}
                     </div>
 
                     {/* Frontal ID Indicator when photo is loaded */}
-                    {emp.avatarUrl && (
+                    {photoUrl && (
                       <span className="px-2 py-0.5 rounded-md bg-black/75 border border-cyan-500/40 text-cyan-300 text-[9.5px] font-mono backdrop-blur-md flex items-center gap-1 shadow-xs">
                         <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
                         <span>FRONTAL VIEW</span>
@@ -406,10 +490,10 @@ export const EmployeesPage: React.FC = () => {
                       title="Enroll Face Biometrics"
                     >
                       <CameraIcon className="w-3.5 h-3.5" />
-                      <span>{hasBiometrics ? 'Update Face Model' : 'Enroll Biometrics'}</span>
+                      <span>{hasBiometrics ? 'Update Biometrics' : 'Enroll Biometrics'}</span>
                     </button>
                     <span className="text-[10px] font-mono text-zinc-300 drop-shadow">
-                      {emp.faceTemplatesCount || 0} enrolled face angles
+                      {completeness}/4 angles captured
                     </span>
                   </div>
 
@@ -431,6 +515,17 @@ export const EmployeesPage: React.FC = () => {
                     <p className="text-[11px] font-mono text-[#8c8c8c] dark:text-[#71717a] truncate mt-0.5">
                       {emp.employeeCode} • {emp.department}
                     </p>
+                    {!isAllDone ? (
+                      <div className="text-[10.5px] text-amber-500 font-mono mt-0.5 flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
+                        <span>Requires {4 - completeness} more capture{4 - completeness > 1 ? 's' : ''}</span>
+                      </div>
+                    ) : (
+                      <div className="text-[10.5px] text-emerald-400 font-mono mt-0.5 flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                        <span>Full CCTV Primed</span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -595,134 +690,152 @@ export const EmployeesPage: React.FC = () => {
               </button>
             </div>
 
-            {/* Existing Enrolled Templates Summary */}
-            {existingTemplates && (
-              <div className="p-3 rounded-xl bg-black/[0.03] dark:bg-black/30 border border-black/[0.08] dark:border-white/[0.08] space-y-2">
-                <div className="text-[11px] font-mono uppercase text-[#8c8c8c] dark:text-[#71717a] flex items-center justify-between">
-                  <span>Enrolled Face Angles ({(existingTemplates.faceTemplates || []).length})</span>
-                  <span className="text-orange-400">Frontal + Left + Right</span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {['FRONTAL', 'LEFT_PROFILE', 'RIGHT_PROFILE'].map((pose) => {
-                    const match = (existingTemplates.faceTemplates || []).find((t) => t.poseAngle === pose);
-                    return (
-                      <div
-                        key={pose}
-                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono border ${
-                          match
-                            ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
-                            : 'bg-black/20 border-white/5 text-slate-500'
-                        }`}
-                      >
-                        {match ? <CheckCircle2 className="w-3.5 h-3.5" /> : <div className="w-3.5 h-3.5 rounded-full border border-slate-600" />}
-                        <span>{pose}</span>
-                        {match && <span className="text-[10px] opacity-75">({(match.qualityScore * 100).toFixed(0)}%)</span>}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* Body Re-ID Template Status */}
-                <div className="pt-2 border-t border-black/[0.05] dark:border-white/[0.05] flex items-center justify-between text-xs font-mono">
-                  <span className="text-[#8c8c8c] dark:text-[#71717a]">Body Re-ID Profiles:</span>
-                  <span className={(existingTemplates.bodyTemplates || []).length > 0 ? 'text-emerald-400 font-bold' : 'text-slate-500'}>
-                    {(existingTemplates.bodyTemplates || []).length > 0 ? (
-                      `✓ ${(existingTemplates.bodyTemplates || []).length} Full-Body Profile Enrolled`
-                    ) : (
-                      'No Body Re-ID uploaded yet'
-                    )}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* Modality Selector: Face vs Body */}
-            <div>
-              <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
-                Biometric Modality
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEnrollMode('FACE');
-                    setEnrollImageBase64(null);
-                    setEnrollStatus(null);
-                    setEnrollError(null);
-                  }}
-                  className={`py-2 px-3 text-xs font-mono rounded-xl border flex items-center justify-center gap-2 transition cursor-pointer ${
-                    enrollMode === 'FACE'
-                      ? 'border-cyan-500 bg-cyan-500/15 text-cyan-400 font-bold'
-                      : 'border-black/[0.08] dark:border-white/[0.08] text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <CameraIcon className="w-3.5 h-3.5" />
-                  <span>Face Biometrics</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEnrollMode('BODY');
-                    setEnrollImageBase64(null);
-                    setEnrollStatus(null);
-                    setEnrollError(null);
-                  }}
-                  className={`py-2 px-3 text-xs font-mono rounded-xl border flex items-center justify-center gap-2 transition cursor-pointer ${
-                    enrollMode === 'BODY'
-                      ? 'border-orange-500 bg-orange-500/15 text-orange-400 font-bold'
-                      : 'border-black/[0.08] dark:border-white/[0.08] text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <User className="w-3.5 h-3.5" />
-                  <span>Body Re-ID</span>
-                </button>
+            {/* Compulsory Biometrics Warning Notice */}
+            <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs font-mono flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+              <div>
+                <span className="font-bold text-amber-200">CCTV Mandatory 4-Angle Biometrics:</span>
+                <span className="text-amber-300/90 ml-1">
+                  All 4 captures (Frontal 0°, Left ~30°, Right ~30°, Full-Body Re-ID) are compulsory. Cameras require all angles to accurately match employees across warehouse aisles, turns, and masked conditions.
+                </span>
               </div>
             </div>
 
-            {/* If Face Mode: Pose Selector */}
-            {enrollMode === 'FACE' && (
-              <div>
-                <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
-                  Select Head Pose Angle
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { id: 'FRONTAL', label: 'Frontal (0°)' },
-                    { id: 'LEFT_PROFILE', label: 'Left (~30°)' },
-                    { id: 'RIGHT_PROFILE', label: 'Right (~30°)' },
-                  ].map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => setEnrollPose(p.id)}
-                      className={`py-2 px-2 text-xs font-mono rounded-xl border transition cursor-pointer ${
-                        enrollPose === p.id
-                          ? 'border-cyan-500 bg-cyan-500/15 text-cyan-400 font-bold'
-                          : 'border-black/[0.08] dark:border-white/[0.08] text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* If Body Mode: Helper Banner */}
-            {enrollMode === 'BODY' && (
-              <div className="p-2.5 rounded-xl border border-orange-500/30 bg-orange-500/10 text-orange-400 text-xs font-mono flex items-start gap-2">
-                <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>
-                  Upload full-body standing photo or CCTV crop. Re-ID enables tracking from overhead angles or when face is obscured/masked.
+            {/* 4-Step Compulsory Stepper Bar */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-[11px] font-mono uppercase text-[#8c8c8c] dark:text-[#71717a]">
+                <span>Biometric Capture Steps (4 Required)</span>
+                <span className="text-orange-400 font-bold">
+                  {(() => {
+                    const fCount = (existingTemplates?.faceTemplates || []).length;
+                    const bCount = (existingTemplates?.bodyTemplates || []).length;
+                    const poses = new Set((existingTemplates?.faceTemplates || []).map((t) => t.poseAngle));
+                    let done = 0;
+                    if (poses.has('FRONTAL')) done++;
+                    if (poses.has('LEFT_PROFILE')) done++;
+                    if (poses.has('RIGHT_PROFILE')) done++;
+                    if (bCount > 0) done++;
+                    return `${done} of 4 Enrolled`;
+                  })()}
                 </span>
               </div>
-            )}
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {[
+                  { id: 'FRONTAL', mode: 'FACE' as const, pose: 'FRONTAL', title: '1. Frontal', angle: '0°' },
+                  { id: 'LEFT_PROFILE', mode: 'FACE' as const, pose: 'LEFT_PROFILE', title: '2. Left', angle: '~30°' },
+                  { id: 'RIGHT_PROFILE', mode: 'FACE' as const, pose: 'RIGHT_PROFILE', title: '3. Right', angle: '~30°' },
+                  { id: 'BODY', mode: 'BODY' as const, pose: 'BODY', title: '4. Body Re-ID', angle: 'Full' },
+                ].map((step) => {
+                  const isFace = step.mode === 'FACE';
+                  const match = isFace
+                    ? (existingTemplates?.faceTemplates || []).find((t) => t.poseAngle === step.pose)
+                    : (existingTemplates?.bodyTemplates || [])[0];
+                  const isEnrolled = !!match;
+                  const isActive =
+                    (enrollMode === 'FACE' && enrollPose === step.pose) ||
+                    (enrollMode === 'BODY' && step.mode === 'BODY');
+
+                  return (
+                    <button
+                      key={step.id}
+                      type="button"
+                      onClick={() => {
+                        setEnrollMode(step.mode);
+                        setEnrollPose(step.pose);
+                        setEnrollImageBase64(null);
+                        setEnrollStatus(null);
+                        setEnrollError(null);
+                      }}
+                      className={`relative p-2.5 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer select-none ${
+                        isActive
+                          ? 'border-cyan-400 bg-cyan-500/15 shadow-[0_0_15px_rgba(6,182,212,0.25)] ring-1 ring-cyan-400'
+                          : isEnrolled
+                          ? 'border-emerald-500/40 bg-emerald-500/10 hover:border-emerald-500'
+                          : 'border-black/[0.1] dark:border-white/[0.1] bg-black/[0.02] dark:bg-white/[0.02] hover:border-white/20'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1 mb-1.5">
+                        <span className="text-[11px] font-bold font-mono tracking-tight text-[#0a0a0a] dark:text-white">
+                          {step.title}
+                        </span>
+                        {isEnrolled ? (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        ) : (
+                          <span className="text-[9px] font-mono uppercase px-1 py-0.2 rounded bg-red-500/20 text-red-300 border border-red-500/30">
+                            Req
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Thumbnail or Angle Indicator */}
+                      <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-black/60 border border-black/[0.08] dark:border-white/[0.08] flex items-center justify-center">
+                        {isEnrolled ? (
+                          <img
+                            key={`thumb-${enrollModalEmployee.id}-${step.pose}-${photoVersion}`}
+                            src={employeeService.getEmployeePhotoUrl(enrollModalEmployee.id, step.pose, photoVersion)}
+                            alt={step.title}
+                            className="w-full h-full object-cover object-top"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <div className="flex flex-col items-center justify-center text-zinc-500 font-mono text-[10px]">
+                            <CameraIcon className="w-3.5 h-3.5 opacity-40 mb-0.5" />
+                            <span>{step.angle}</span>
+                          </div>
+                        )}
+                        {isActive && (
+                          <div className="absolute inset-0 border-2 border-cyan-400 rounded-lg pointer-events-none animate-pulse" />
+                        )}
+                      </div>
+
+                      <div className="mt-1.5 flex items-center justify-between text-[9.5px] font-mono text-zinc-400">
+                        <span>{step.angle}</span>
+                        <span className={isEnrolled ? 'text-emerald-400 font-semibold' : 'text-zinc-500'}>
+                          {isEnrolled ? 'ENROLLED' : 'PENDING'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Active Capture Heading & Guidance */}
+            <div className="p-3 rounded-xl bg-black/[0.03] dark:bg-black/30 border border-black/[0.08] dark:border-white/[0.08] space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold font-mono text-cyan-400 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                  <span>
+                    {enrollMode === 'FACE'
+                      ? `Active Capture: ${enrollPose === 'FRONTAL' ? 'Frontal Face (0°)' : enrollPose === 'LEFT_PROFILE' ? 'Left Profile (~30°)' : 'Right Profile (~30°)'}`
+                      : 'Active Capture: Full-Body Person Re-ID'}
+                  </span>
+                </span>
+                <span className="text-[10px] font-mono text-zinc-400 uppercase">
+                  {enrollMode === 'FACE' ? 'Compulsory Face Model' : 'Compulsory FastReID Model'}
+                </span>
+              </div>
+              <p className="text-[11.5px] text-zinc-300 font-sans">
+                {enrollMode === 'FACE' && enrollPose === 'FRONTAL' && (
+                  'Direct camera view. Clear lighting, neutral expression, without hat or mask. This is the primary avatar shown on the employee card.'
+                )}
+                {enrollMode === 'FACE' && enrollPose === 'LEFT_PROFILE' && (
+                  'Turn head ~30° to the left. Enables camera identification when the person approaches from side aisles.'
+                )}
+                {enrollMode === 'FACE' && enrollPose === 'RIGHT_PROFILE' && (
+                  'Turn head ~30° to the right. Enables camera identification when the person approaches from opposite aisles.'
+                )}
+                {enrollMode === 'BODY' && (
+                  'Full-body standing photograph or CCTV person crop from head to shoes. Enables temporal tracking across CCTV cameras even when face is turned away or occluded.'
+                )}
+              </p>
+            </div>
 
             {/* File Upload Box */}
             <div>
-              <label className="block text-[#6b6b6b] dark:text-[#a1a1aa] mb-1 font-mono uppercase text-[10px]">
-                {enrollMode === 'FACE' ? 'Face Photo (Passport or Clear CCTV Crop)' : 'Full-Body Standing Photo (CCTV Crop or Photo)'}
-              </label>
               <input
                 type="file"
                 ref={fileInputRef}
@@ -738,43 +851,52 @@ export const EmployeesPage: React.FC = () => {
                     alt="Preview"
                     className="max-h-full max-w-full object-contain"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setEnrollImageBase64(null)}
-                    className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 text-white hover:bg-black cursor-pointer"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+                  <div className="absolute top-2 right-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="px-2.5 py-1 rounded-full bg-black/80 text-xs font-mono text-cyan-300 border border-cyan-500/40 hover:bg-black cursor-pointer"
+                    >
+                      Change Photo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEnrollImageBase64(null)}
+                      className="p-1.5 rounded-full bg-black/80 text-white hover:bg-black cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div
                   onClick={() => fileInputRef.current?.click()}
-                  className="w-full border-2 border-dashed border-black/[0.15] dark:border-white/[0.15] hover:border-cyan-500/60 rounded-xl p-8 text-center cursor-pointer transition flex flex-col items-center justify-center gap-2 bg-black/[0.02] dark:bg-white/[0.02]"
+                  className="w-full border-2 border-dashed border-black/[0.15] dark:border-white/[0.15] hover:border-cyan-500/60 rounded-xl p-6 text-center cursor-pointer transition flex flex-col items-center justify-center gap-2 bg-black/[0.02] dark:bg-white/[0.02]"
                 >
-                  <Upload className="w-8 h-8 text-cyan-400 opacity-80" />
+                  <Upload className="w-7 h-7 text-cyan-400 opacity-80" />
                   <div className="text-xs text-[#0a0a0a] dark:text-white font-medium">
                     {enrollMode === 'FACE'
-                      ? 'Click to browse or drop an employee face image'
-                      : 'Click to browse or drop a full-body standing photo'}
+                      ? `Click to select or drop ${enrollPose === 'FRONTAL' ? 'Frontal (0°)' : enrollPose === 'LEFT_PROFILE' ? 'Left Profile' : 'Right Profile'} face photo`
+                      : 'Click to select or drop Full-Body standing person photo'}
                   </div>
                   <span className="text-[10px] text-slate-400">
                     {enrollMode === 'FACE'
                       ? 'Real-time quality filtering will reject blurry or low-res images'
-                      : 'Extracts spatial color pyramid & structural texture for FastReID'}
+                      : 'Extracts spatial color pyramid & structural body descriptor for FastReID'}
                   </span>
                 </div>
               )}
             </div>
 
             {enrollStatus && (
-              <div className="p-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-xs font-medium flex items-center gap-2">
+              <div className="p-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-xs font-medium flex items-center gap-2 animate-fadeIn">
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
                 <span>{enrollStatus}</span>
               </div>
             )}
 
             {enrollError && (
-              <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-xs font-medium flex items-center gap-2">
+              <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-xs font-medium flex items-center gap-2 animate-fadeIn">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 <span>{enrollError}</span>
               </div>
@@ -786,24 +908,26 @@ export const EmployeesPage: React.FC = () => {
                 onClick={() => setEnrollModalEmployee(null)}
                 className="px-4 py-2 rounded-xl border border-black/10 dark:border-white/10 text-slate-400 hover:text-white cursor-pointer"
               >
-                Close
+                Done / Close
               </button>
               <button
                 type="button"
                 disabled={!enrollImageBase64 || isEnrolling}
                 onClick={handleEnroll}
-                className="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-black font-bold cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                className="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-black font-bold cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shadow-md"
               >
                 {isEnrolling ? (
                   <>
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Extracting Embedding...</span>
+                    <span>Extracting & Encrypting...</span>
                   </>
                 ) : (
                   <>
                     <ShieldCheck className="w-4 h-4" />
                     <span>
-                      {enrollMode === 'FACE' ? 'Extract & Save Face Template' : 'Extract & Save Body Re-ID'}
+                      {enrollMode === 'FACE'
+                        ? `Save & Encrypt ${enrollPose === 'FRONTAL' ? 'Frontal Face' : enrollPose === 'LEFT_PROFILE' ? 'Left Profile' : 'Right Profile'}`
+                        : 'Save & Encrypt Body Re-ID'}
                     </span>
                   </>
                 )}

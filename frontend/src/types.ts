@@ -133,6 +133,9 @@ export interface Employee {
   bodyTemplatesCount: number;
   createdAt: string;
   updatedAt: string;
+  enrolledAngles?: string[];
+  completenessScore?: number;
+  isComplete?: boolean;
 }
 
 export interface AttendanceRecord {

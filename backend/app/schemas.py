@@ -198,14 +198,19 @@ class EmployeeResponse(EmployeeBase):
     created_at: str = Field(..., alias="createdAt")
     updated_at: str = Field(..., alias="updatedAt")
     template_count: int = Field(default=0, alias="templateCount")
+    body_templates_count: int = Field(default=0, alias="bodyTemplatesCount")
     has_photo: bool = Field(default=False, alias="hasPhoto")
     avatar_url: str | None = Field(default=None, alias="avatarUrl")
+    enrolled_angles: list[str] = Field(default_factory=list, alias="enrolledAngles")
+    completeness_score: int = Field(default=0, alias="completenessScore")
+    is_complete: bool = Field(default=False, alias="isComplete")
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
 
 class FaceEnrollmentRequest(BaseModel):
     image_base64: str = Field(..., alias="imageBase64", description="Base64 encoded face photo")
     pose: str = Field(default="frontal", description="frontal, left, right, profile_left, profile_right, upward, downward")
+    pose_angle: str | None = Field(default=None, alias="poseAngle")
     source: str = Field(default="enrollment_webcam", description="enrollment_webcam or cctv_verified")
     camera_id: str | None = Field(default=None, alias="cameraId")
     model_config = ConfigDict(populate_by_name=True)

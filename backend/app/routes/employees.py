@@ -42,6 +42,55 @@ def decode_b64_image(b64_str: str) -> Optional[np.ndarray]:
         logger.error(f"Error decoding base64 image: {e}")
         return None
 
+async def get_employee_response_dict(emp: Employee, db: AsyncSession) -> dict:
+    faces_res = await db.execute(
+        select(FaceTemplate).where(FaceTemplate.employee_id == emp.id)
+    )
+    faces = faces_res.scalars().all()
+
+    bodies_res = await db.execute(
+        select(BodyTemplate).where(BodyTemplate.employee_id == emp.id)
+    )
+    bodies = bodies_res.scalars().all()
+
+    t_count = len(faces)
+    b_count = len(bodies)
+
+    has_photo = any(f.encrypted_image is not None for f in faces) or any(b.encrypted_image is not None for b in bodies) or (t_count > 0)
+    avatar_url = f"/api/employees/{emp.id}/photo?pose=FRONTAL" if has_photo else None
+
+    enrolled_angles = []
+    face_poses = set((f.pose or "").strip().upper() for f in faces)
+    if "FRONTAL" in face_poses:
+        enrolled_angles.append("FRONTAL")
+    if "LEFT_PROFILE" in face_poses or "LEFT" in face_poses:
+        enrolled_angles.append("LEFT_PROFILE")
+    if "RIGHT_PROFILE" in face_poses or "RIGHT" in face_poses:
+        enrolled_angles.append("RIGHT_PROFILE")
+    if b_count > 0:
+        enrolled_angles.append("BODY")
+
+    completeness_score = len(enrolled_angles)
+    is_complete = (completeness_score == 4)
+
+    return {
+        "id": emp.id,
+        "employeeCode": emp.employee_code,
+        "name": emp.name,
+        "department": emp.department,
+        "role": emp.role,
+        "active": emp.active,
+        "createdAt": emp.created_at.isoformat(),
+        "updatedAt": emp.updated_at.isoformat(),
+        "templateCount": t_count,
+        "bodyTemplatesCount": b_count,
+        "hasPhoto": has_photo,
+        "avatarUrl": avatar_url,
+        "enrolledAngles": enrolled_angles,
+        "completenessScore": completeness_score,
+        "isComplete": is_complete
+    }
+
 @router.get("", response_model=List[EmployeeResponse])
 async def list_employees(
     search: Optional[str] = None,
@@ -69,37 +118,10 @@ async def list_employees(
     res = await db.execute(query)
     employees = res.scalars().all()
 
-    # Aggregate template counts and photos
     out = []
     for emp in employees:
-        count_res = await db.execute(
-            select(func.count(FaceTemplate.id)).where(FaceTemplate.employee_id == emp.id)
-        )
-        t_count = count_res.scalar() or 0
-
-        photo_res = await db.execute(
-            select(func.count(FaceTemplate.id)).where(
-                FaceTemplate.employee_id == emp.id,
-                FaceTemplate.encrypted_image != None
-            )
-        )
-        p_count = photo_res.scalar() or 0
-        has_photo = (p_count > 0)
-        avatar_url = f"/api/employees/{emp.id}/photo?pose=FRONTAL" if has_photo else None
-
-        out.append({
-            "id": emp.id,
-            "employeeCode": emp.employee_code,
-            "name": emp.name,
-            "department": emp.department,
-            "role": emp.role,
-            "active": emp.active,
-            "createdAt": emp.created_at.isoformat(),
-            "updatedAt": emp.updated_at.isoformat(),
-            "templateCount": t_count,
-            "hasPhoto": has_photo,
-            "avatarUrl": avatar_url
-        })
+        emp_dict = await get_employee_response_dict(emp, db)
+        out.append(emp_dict)
     return out
 
 @router.post("", response_model=EmployeeResponse, status_code=status.HTTP_201_CREATED)
@@ -135,17 +157,7 @@ async def create_employee(
     # Refresh in-memory templates cache
     await attendance_service.reload_templates_cache()
 
-    return {
-        "id": emp.id,
-        "employeeCode": emp.employee_code,
-        "name": emp.name,
-        "department": emp.department,
-        "role": emp.role,
-        "active": emp.active,
-        "createdAt": emp.created_at.isoformat(),
-        "updatedAt": emp.updated_at.isoformat(),
-        "templateCount": 0
-    }
+    return await get_employee_response_dict(emp, db)
 
 @router.get("/{id}", response_model=EmployeeResponse)
 async def get_employee(
@@ -158,34 +170,7 @@ async def get_employee(
     if not emp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
-    count_res = await db.execute(
-        select(func.count(FaceTemplate.id)).where(FaceTemplate.employee_id == emp.id)
-    )
-    t_count = count_res.scalar() or 0
-
-    photo_res = await db.execute(
-        select(func.count(FaceTemplate.id)).where(
-            FaceTemplate.employee_id == emp.id,
-            FaceTemplate.encrypted_image != None
-        )
-    )
-    p_count = photo_res.scalar() or 0
-    has_photo = (p_count > 0)
-    avatar_url = f"/api/employees/{emp.id}/photo?pose=FRONTAL" if has_photo else None
-
-    return {
-        "id": emp.id,
-        "employeeCode": emp.employee_code,
-        "name": emp.name,
-        "department": emp.department,
-        "role": emp.role,
-        "active": emp.active,
-        "createdAt": emp.created_at.isoformat(),
-        "updatedAt": emp.updated_at.isoformat(),
-        "templateCount": t_count,
-        "hasPhoto": has_photo,
-        "avatarUrl": avatar_url
-    }
+    return await get_employee_response_dict(emp, db)
 
 @router.put("/{id}", response_model=EmployeeResponse)
 async def update_employee(
@@ -210,22 +195,7 @@ async def update_employee(
 
     await attendance_service.reload_templates_cache()
 
-    count_res = await db.execute(
-        select(func.count(FaceTemplate.id)).where(FaceTemplate.employee_id == emp.id)
-    )
-    t_count = count_res.scalar() or 0
-
-    return {
-        "id": emp.id,
-        "employeeCode": emp.employee_code,
-        "name": emp.name,
-        "department": emp.department,
-        "role": emp.role,
-        "active": emp.active,
-        "createdAt": emp.created_at.isoformat(),
-        "updatedAt": emp.updated_at.isoformat(),
-        "templateCount": t_count
-    }
+    return await get_employee_response_dict(emp, db)
 
 @router.delete("/{id}")
 async def delete_employee(
@@ -290,7 +260,7 @@ async def enroll_employee_face(
     now = datetime.now(timezone.utc)
     emb_json = json.dumps(embedding.tolist())
     fh, fw = face_crop.shape[:2]
-    pose_name = (payload.pose or "FRONTAL").strip().upper()
+    pose_name = (payload.pose_angle or payload.pose or "FRONTAL").strip().upper()
 
     template = FaceTemplate(
         id=t_id,
@@ -441,19 +411,33 @@ async def get_employee_face_photo(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
     pose_req = (pose or "FRONTAL").strip().upper()
-    q_pose = (
-        select(FaceTemplate)
-        .where(
-            FaceTemplate.employee_id == id,
-            FaceTemplate.encrypted_image != None,
-            FaceTemplate.pose.ilike(pose_req)
-        )
-        .order_by(FaceTemplate.quality_score.desc(), desc(FaceTemplate.created_at))
-    )
-    res = await db.execute(q_pose)
-    template = res.scalars().first()
+    template = None
 
-    if not template:
+    if pose_req in ["BODY", "REID", "BODY_REID"]:
+        q_body = (
+            select(BodyTemplate)
+            .where(
+                BodyTemplate.employee_id == id,
+                BodyTemplate.encrypted_image != None
+            )
+            .order_by(desc(BodyTemplate.created_at))
+        )
+        res_body = await db.execute(q_body)
+        template = res_body.scalars().first()
+    else:
+        q_pose = (
+            select(FaceTemplate)
+            .where(
+                FaceTemplate.employee_id == id,
+                FaceTemplate.encrypted_image != None,
+                FaceTemplate.pose.ilike(pose_req)
+            )
+            .order_by(FaceTemplate.quality_score.desc(), desc(FaceTemplate.created_at))
+        )
+        res = await db.execute(q_pose)
+        template = res.scalars().first()
+
+    if not template and pose_req not in ["BODY", "REID", "BODY_REID"]:
         q_any = (
             select(FaceTemplate)
             .where(

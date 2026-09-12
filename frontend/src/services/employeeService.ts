@@ -28,12 +28,13 @@ export interface EnrollmentResult {
 
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:5000/api';
 
-export const getEmployeePhotoUrl = (id: string, pose: string = 'FRONTAL'): string => {
+export const getEmployeePhotoUrl = (id: string, pose: string = 'FRONTAL', v?: string | number): string => {
   const token = localStorage.getItem('token');
-  const qs = token
-    ? `?token=${encodeURIComponent(token)}&pose=${encodeURIComponent(pose)}`
-    : `?pose=${encodeURIComponent(pose)}`;
-  return `${API_BASE_URL}/employees/${id}/photo${qs}`;
+  const params = new URLSearchParams();
+  if (token) params.set('token', token);
+  params.set('pose', pose);
+  if (v !== undefined) params.set('v', String(v));
+  return `${API_BASE_URL}/employees/${id}/photo?${params.toString()}`;
 };
 
 export const employeeService = {
@@ -52,6 +53,7 @@ export const employeeService = {
     return (data || []).map((raw: any) => {
       const id = raw.id;
       const faceCount = raw.faceTemplatesCount || raw.templateCount || 0;
+      const bodyCount = raw.bodyTemplatesCount || 0;
       const hasPhoto = raw.hasPhoto || faceCount > 0;
       const avatarUrl = raw.avatarUrl || (hasPhoto ? getEmployeePhotoUrl(id, 'FRONTAL') : null);
 
@@ -65,7 +67,10 @@ export const employeeService = {
         isActive: raw.isActive !== undefined ? raw.isActive : (raw.active !== undefined ? raw.active : true),
         notes: raw.notes || null,
         faceTemplatesCount: faceCount,
-        bodyTemplatesCount: raw.bodyTemplatesCount || 0,
+        bodyTemplatesCount: bodyCount,
+        enrolledAngles: raw.enrolledAngles || raw.enrolled_angles || [],
+        completenessScore: raw.completenessScore ?? raw.completeness_score ?? 0,
+        isComplete: raw.isComplete ?? raw.is_complete ?? false,
         createdAt: raw.createdAt || raw.created_at || new Date().toISOString(),
         updatedAt: raw.updatedAt || raw.updated_at || new Date().toISOString(),
       };
@@ -77,6 +82,7 @@ export const employeeService = {
     if (!res.ok) throw new Error(`Failed to get employee details: ${res.statusText}`);
     const raw = await res.json();
     const faceCount = raw.faceTemplatesCount || raw.templateCount || 0;
+    const bodyCount = raw.bodyTemplatesCount || 0;
     const hasPhoto = raw.hasPhoto || faceCount > 0;
     const avatarUrl = raw.avatarUrl || (hasPhoto ? getEmployeePhotoUrl(raw.id, 'FRONTAL') : null);
 
@@ -90,7 +96,10 @@ export const employeeService = {
       isActive: raw.isActive !== undefined ? raw.isActive : (raw.active !== undefined ? raw.active : true),
       notes: raw.notes || null,
       faceTemplatesCount: faceCount,
-      bodyTemplatesCount: raw.bodyTemplatesCount || 0,
+      bodyTemplatesCount: bodyCount,
+      enrolledAngles: raw.enrolledAngles || raw.enrolled_angles || [],
+      completenessScore: raw.completenessScore ?? raw.completeness_score ?? 0,
+      isComplete: raw.isComplete ?? raw.is_complete ?? false,
       createdAt: raw.createdAt || raw.created_at || new Date().toISOString(),
       updatedAt: raw.updatedAt || raw.updated_at || new Date().toISOString(),
     };
@@ -169,6 +178,7 @@ export const employeeService = {
       method: 'POST',
       body: JSON.stringify({
         imageBase64,
+        pose: poseAngle,
         poseAngle,
       }),
     });
