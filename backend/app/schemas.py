@@ -25,6 +25,7 @@ class CameraUpdate(BaseModel):
 
 class CameraResponse(BaseModel):
     id: str
+    user_id: str | None = Field(default=None, alias="userId")
     name: str
     code: str
     zone: str
@@ -151,6 +152,9 @@ class AnomalyEventResponse(BaseModel):
     model_class_name: str | None = Field(default=None, alias="modelClassName")
     confidence: float
     track_id: int | None = Field(default=None, alias="trackId")
+    employee_id: str | None = Field(default=None, alias="employeeId")
+    employee_name: str | None = Field(default=None, alias="employeeName")
+    alert_message: str | None = Field(default=None, alias="alertMessage")
     first_seen_at: str = Field(..., alias="firstSeenAt")
     confirmed_at: str = Field(..., alias="confirmedAt")
     ended_at: str | None = Field(default=None, alias="endedAt")
@@ -165,4 +169,91 @@ class AnomalyEventResponse(BaseModel):
 
 class AnomalyStatusUpdate(BaseModel):
     status: str = Field(..., description="NEW, REVIEWED, or RESOLVED")
+
+
+# ─── Employee Schemas ──────────────────────────────────────────────
+class EmployeeBase(BaseModel):
+    employee_code: str = Field(..., min_length=2, max_length=32, alias="employeeCode")
+    name: str = Field(..., min_length=2, max_length=128)
+    department: str = Field(default="Production", max_length=64)
+    role: str = Field(default="Staff", max_length=64)
+    active: bool = True
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class EmployeeCreate(EmployeeBase):
+    pass
+
+
+class EmployeeUpdate(BaseModel):
+    name: str | None = None
+    department: str | None = None
+    role: str | None = None
+    active: bool | None = None
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class EmployeeResponse(EmployeeBase):
+    id: str
+    created_at: str = Field(..., alias="createdAt")
+    updated_at: str = Field(..., alias="updatedAt")
+    template_count: int = Field(default=0, alias="templateCount")
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
+
+
+class FaceEnrollmentRequest(BaseModel):
+    image_base64: str = Field(..., alias="imageBase64", description="Base64 encoded face photo")
+    pose: str = Field(default="frontal", description="frontal, left, right, profile_left, profile_right, upward, downward")
+    source: str = Field(default="enrollment_webcam", description="enrollment_webcam or cctv_verified")
+    camera_id: str | None = Field(default=None, alias="cameraId")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class BodyEnrollmentRequest(BaseModel):
+    image_base64: str = Field(..., alias="imageBase64", description="Base64 encoded full-body photo")
+    source: str = Field(default="cctv_verified")
+    camera_id: str | None = Field(default=None, alias="cameraId")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class TemplateMetadataResponse(BaseModel):
+    id: str
+    employee_id: str = Field(..., alias="employeeId")
+    type: str  # face or body
+    pose: str | None = None
+    quality_score: float = Field(..., alias="qualityScore")
+    source: str
+    camera_id: str | None = Field(default=None, alias="cameraId")
+    created_at: str = Field(..., alias="createdAt")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# ─── Attendance Schemas ───────────────────────────────────────────
+class AttendanceResponse(BaseModel):
+    id: str
+    employee_id: str = Field(..., alias="employeeId")
+    employee_code: str = Field(..., alias="employeeCode")
+    employee_name: str = Field(..., alias="employeeName")
+    department: str
+    date: str
+    first_seen_at: str = Field(..., alias="firstSeenAt")
+    last_seen_at: str = Field(..., alias="lastSeenAt")
+    clock_in_camera_id: str | None = Field(default=None, alias="clockInCameraId")
+    last_seen_camera_id: str | None = Field(default=None, alias="lastSeenCameraId")
+    clock_in_camera_name: str | None = Field(default=None, alias="clockInCameraName")
+    last_seen_camera_name: str | None = Field(default=None, alias="lastSeenCameraName")
+    clock_in_confidence: float = Field(..., alias="clockInConfidence")
+    status: str
+    duration_hours: str = Field(default="0.0", alias="durationHours")
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
+
+
+class AttendanceSummaryResponse(BaseModel):
+    date: str
+    total_employees: int = Field(..., alias="totalEmployees")
+    clocked_in_today: int = Field(..., alias="clockedInToday")
+    active_on_site: int = Field(..., alias="activeOnSite")
+    completed_shifts: int = Field(..., alias="completedShifts")
+    attendance_rate: float = Field(..., alias="attendanceRate")
+    model_config = ConfigDict(populate_by_name=True)
 

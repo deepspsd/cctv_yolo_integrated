@@ -28,6 +28,8 @@ class TrackAnomalyRecord:
         self.camera_id = camera_id
         self.track_id = track_id
         self.anomaly_type = anomaly_type
+        self.employee_id: Optional[str] = None
+        self.employee_name: Optional[str] = None
         self.state = AnomalyTrackState.NOT_PRESENT
         self.consecutive_hits = 0
         self.consecutive_misses = 0
@@ -75,6 +77,11 @@ class AnomalyStateMachine:
         for obs in observations:
             t_id = obs["track_id"]
             a_type = obs["anomaly_type"]
+
+            # Person detection is for count tracking/bounding box, NEVER stored as anomaly event
+            if a_type == "PERSON_DETECTED":
+                continue
+
             key = (camera_id, t_id, a_type)
             seen_keys.add(key)
 
@@ -91,6 +98,10 @@ class AnomalyStateMachine:
             rec.highest_conf = max(rec.highest_conf, obs.get("confidence", 0.0))
             rec.last_box = obs.get("ppe_box")
             rec.person_box = obs.get("person_box")
+            if obs.get("employee_id"):
+                rec.employee_id = obs["employee_id"]
+            if obs.get("employee_name"):
+                rec.employee_name = obs["employee_name"]
 
             # State transitions
             if rec.state == AnomalyTrackState.NOT_PRESENT:
@@ -105,10 +116,28 @@ class AnomalyStateMachine:
                     event_id = f"evt_{uuid.uuid4().hex[:12]}"
                     rec.current_event_id = event_id
 
+                    # Derive named alert message
+                    ppe_friendly_names = {
+                        "NO_HARDHAT": "hardhat",
+                        "NO_MASK": "mask",
+                        "NO_SAFETY_VEST": "safety vest",
+                        "PHONE_VIOLATION": "phone",
+                        "MACHINERY_HAZARD": "heavy machinery safety boundary"
+                    }
+                    friendly_ppe = ppe_friendly_names.get(a_type, a_type.lower().replace("_", " "))
+                    if rec.employee_name and rec.employee_name != "Unidentified person":
+                        alert_message = f"{rec.employee_name} has not worn {friendly_ppe}"
+                    else:
+                        alert_message = f"Unidentified person has not worn {friendly_ppe}"
+
+                    # Calculate severity
+                    severity = "CRITICAL" if ("HARDHAT" in a_type or "HAZARD" in a_type) else ("HIGH" if ("MASK" in a_type or "VEST" in a_type) else "MEDIUM")
+
                     # Save evidence snapshot (Only for violations: NO_HARDHAT, NO_MASK, PHONE_VIOLATION, etc. Skip PERSON_DETECTED)
                     snapshot_path = None
+                    encrypted_bytes = None
                     if current_frame is not None and a_type != "PERSON_DETECTED":
-                        snapshot_path = self._save_evidence_snapshot(
+                        snapshot_path, encrypted_bytes = self._save_evidence_snapshot(
                             frame=current_frame,
                             camera_id=camera_id,
                             camera_name=camera_name,
@@ -117,7 +146,8 @@ class AnomalyStateMachine:
                             confidence=rec.highest_conf,
                             track_id=t_id,
                             event_id=event_id,
-                            bbox=rec.last_box or rec.person_box
+                            bbox=rec.last_box or rec.person_box,
+                            employee_name=rec.employee_name
                         )
 
                     event_category = "DETECTION" if a_type == "PERSON_DETECTED" else "VIOLATION"
@@ -140,6 +170,13 @@ class AnomalyStateMachine:
                         "confidence": round(rec.highest_conf, 2),
                         "track_id": t_id,
                         "trackId": t_id,
+                        "employee_id": rec.employee_id,
+                        "employeeId": rec.employee_id,
+                        "employee_name": rec.employee_name,
+                        "employeeName": rec.employee_name,
+                        "alert_message": alert_message,
+                        "alertMessage": alert_message,
+                        "severity": severity,
                         "first_seen_at": rec.first_seen_at.isoformat(),
                         "firstSeenAt": rec.first_seen_at.isoformat(),
                         "confirmed_at": rec.confirmed_at.isoformat(),
@@ -149,6 +186,7 @@ class AnomalyStateMachine:
                         "status": "CONFIRMED",
                         "snapshot_path": snapshot_path,
                         "snapshotPath": snapshot_path,
+                        "encrypted_image": encrypted_bytes,
                         "timestamp": rec.confirmed_at.isoformat()
                     }
 
@@ -189,11 +227,13 @@ class AnomalyStateMachine:
         confidence: float,
         track_id: int,
         event_id: str,
-        bbox: Optional[List[float]]
-    ) -> str:
+        bbox: Optional[List[float]],
+        employee_name: Optional[str] = None
+    ) -> Tuple[str, Optional[bytes]]:
         """
         Save evidence frame to data/evidence/YYYY/MM/DD/<camera_id>/
-        with bounding box and telemetry overlay.
+        with bounding box and telemetry overlay, and encrypt JPEG bytes in memory.
+        Returns: (snapshot_path, encrypted_image_bytes)
         """
         try:
             now = datetime.now()
@@ -209,7 +249,6 @@ class AnomalyStateMachine:
 
             # Bounding box
             if bbox and len(bbox) == 4:
-                # If normalized coordinates [0.0 - 1.0]
                 if max(bbox) <= 1.5:
                     x1 = int(bbox[0] * w)
                     y1 = int(bbox[1] * h)
@@ -220,20 +259,33 @@ class AnomalyStateMachine:
 
                 color = (0, 0, 255) if "NO_" in anomaly_type or "HAZARD" in anomaly_type else (0, 255, 0)
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-                tag = f"{anomaly_type} #{track_id} ({int(confidence*100)}%)"
+                
+                person_label = employee_name if (employee_name and employee_name != "Unidentified person") else f"Track #{track_id}"
+                tag = f"{anomaly_type} | {person_label} ({int(confidence*100)}%)"
                 cv2.rectangle(annotated, (x1, max(0, y1 - 22)), (x1 + len(tag) * 9, y1), color, -1)
                 cv2.putText(annotated, tag, (x1 + 2, max(15, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
             # Telemetry banner
-            banner_text = f"CCTV PRIYA | {camera_name} ({zone}) | {anomaly_type} | Track #{track_id} | {now.strftime('%Y-%m-%d %H:%M:%S')}"
+            person_text = f" | {employee_name}" if (employee_name and employee_name != "Unidentified person") else " | Unidentified"
+            banner_text = f"CCTV PRIYA | {camera_name} ({zone}) | {anomaly_type}{person_text} | {now.strftime('%Y-%m-%d %H:%M:%S')}"
             cv2.rectangle(annotated, (0, 0), (w, 26), (0, 0, 0), -1)
             cv2.putText(annotated, banner_text, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
 
+            # Encode in-memory and encrypt with AES-256-GCM
+            encrypted_bytes = None
+            success, enc_buf = cv2.imencode('.jpg', annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if success:
+                try:
+                    from app.security import encrypt_bytes
+                    encrypted_bytes = encrypt_bytes(enc_buf.tobytes())
+                except Exception as enc_err:
+                    logger.error(f"Error encrypting evidence snapshot bytes: {enc_err}")
+
             cv2.imwrite(str(full_path), annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            return str(full_path).replace("\\", "/")
+            return str(full_path).replace("\\", "/"), encrypted_bytes
         except Exception as e:
             logger.error(f"Error saving evidence snapshot: {e}")
-            return ""
+            return "", None
 
     def _schedule_close_event(self, event_id: str, ended_at: datetime, duration: float):
         import asyncio
@@ -258,13 +310,20 @@ class AnomalyStateMachine:
 
     async def persist_confirmed_event(self, event_data: Dict[str, Any]):
         """
-        Store confirmed anomaly event into SQLite database.
+        Store confirmed anomaly event into SQLite database with user_id scoping and encrypted image.
         """
+        if event_data.get("anomaly_type") == "PERSON_DETECTED":
+            return
+
         try:
             async with AsyncSessionLocal() as db:
+                cam_res = await db.execute(select(Camera.user_id).where(Camera.id == event_data["camera_id"]))
+                cam_user_id = cam_res.scalar_one_or_none()
+
                 evt = AnomalyEvent(
                     id=event_data["id"],
                     camera_id=event_data["camera_id"],
+                    user_id=cam_user_id,
                     zone=event_data.get("zone", "General"),
                     event_category=event_data.get("event_category", "VIOLATION"),
                     anomaly_type=event_data["anomaly_type"],
@@ -272,15 +331,18 @@ class AnomalyStateMachine:
                     model_class_name=event_data.get("model_class_name"),
                     confidence=event_data.get("confidence", 0.0),
                     track_id=event_data.get("track_id"),
+                    employee_id=event_data.get("employee_id"),
+                    severity=event_data.get("severity", "HIGH"),
                     first_seen_at=datetime.fromisoformat(event_data["first_seen_at"]),
                     confirmed_at=datetime.fromisoformat(event_data["confirmed_at"]),
                     status="CONFIRMED",
                     snapshot_path=event_data.get("snapshot_path"),
+                    encrypted_image=event_data.get("encrypted_image"),
                     created_at=datetime.now(timezone.utc)
                 )
                 db.add(evt)
                 await db.commit()
-                logger.info(f"Persisted anomaly event {evt.id} ({evt.anomaly_type}) for camera {evt.camera_id}")
+                logger.info(f"Persisted anomaly event {evt.id} ({evt.anomaly_type}) with encrypted image for user {cam_user_id} camera {evt.camera_id}")
         except Exception as e:
             logger.error(f"Error persisting anomaly event: {e}", exc_info=True)
 

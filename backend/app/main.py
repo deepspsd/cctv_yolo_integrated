@@ -12,6 +12,9 @@ from app.routes.cameras import router as cameras_router
 from app.routes.auth import router as auth_router, seed_default_users
 from app.routes.ai import router as ai_router
 from app.routes.anomalies import router as anomalies_router
+from app.routes.employees import router as employees_router
+from app.routes.attendance import router as attendance_router
+from app.attendance_service import attendance_service
 from app.health_manager import health_manager
 from app.ai_engine import ai_engine
 from app.websocket_manager import ws_manager
@@ -31,10 +34,30 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+        def _migrate_db(sync_conn):
+            cursor = sync_conn.connection.cursor()
+            cursor.execute("PRAGMA table_info(cameras)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if "user_id" not in cols:
+                logger.info("Migrating cameras table: adding user_id column...")
+                cursor.execute("ALTER TABLE cameras ADD COLUMN user_id VARCHAR(64) REFERENCES users(id)")
+            # Associate legacy null cameras with deepak@gmail.com or first user
+            cursor.execute("SELECT id FROM users WHERE email = 'deepak@gmail.com' LIMIT 1")
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute("SELECT id FROM users ORDER BY created_at ASC LIMIT 1")
+                row = cursor.fetchone()
+            if row:
+                admin_id = row[0]
+                cursor.execute("UPDATE cameras SET user_id = ? WHERE user_id IS NULL", (admin_id,))
+
+        await conn.run_sync(_migrate_db)
+
     async with AsyncSessionLocal() as db:
         # Seed default operator accounts if users table is empty
         await seed_default_users(db)
-        # Note: Do not auto-seed cameras; database remains clean for user-configured cameras
+        # Load biometric employee templates into high-speed memory cache
+        await attendance_service.reload_templates_cache(db)
 
     # Start asynchronous background camera health checker
     health_manager.start()
@@ -76,6 +99,8 @@ app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(cameras_router, prefix=settings.API_V1_STR)
 app.include_router(ai_router, prefix=settings.API_V1_STR)
 app.include_router(anomalies_router, prefix=settings.API_V1_STR)
+app.include_router(employees_router, prefix=settings.API_V1_STR)
+app.include_router(attendance_router, prefix=settings.API_V1_STR)
 
 # Mount evidence snapshots directory for local inspection
 evidence_dir = Path(settings.AI_EVIDENCE_DIR)

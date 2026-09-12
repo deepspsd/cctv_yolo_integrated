@@ -16,6 +16,7 @@ export interface Camera {
   codec: string;
   bitrate: string;
   model?: string;
+  userId?: string;
   aiState?: CameraAiState;
 }
 
@@ -102,9 +103,67 @@ export interface CameraFormData {
 
 export type StatusFilter = 'All' | CameraStatus;
 
-export type ThemeMode = 'light' | 'dark';
+export type AppView = 'cameras' | 'alerts' | 'attendance' | 'employees' | 'login' | 'register';
 
-export type AppView = 'cameras' | 'alerts' | 'login' | 'register';
+export interface FaceTemplate {
+  id: string;
+  poseAngle: string;
+  qualityScore: number;
+  sourceCamera?: string | null;
+  createdAt: string;
+}
+
+export interface BodyTemplate {
+  id: string;
+  qualityScore: number;
+  sourceCamera?: string | null;
+  createdAt: string;
+}
+
+export interface Employee {
+  id: string;
+  employeeCode: string;
+  fullName: string;
+  department: string;
+  designation: string;
+  avatarUrl?: string | null;
+  isActive: boolean;
+  notes?: string | null;
+  faceTemplatesCount: number;
+  bodyTemplatesCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AttendanceRecord {
+  id: string;
+  employeeId: string;
+  employeeCode: string;
+  employeeName: string;
+  department: string;
+  designation: string;
+  date: string;
+  clockInTime: string;
+  clockInCameraName?: string | null;
+  lastSeenTime: string;
+  lastSeenCameraName?: string | null;
+  clockOutTime?: string | null;
+  totalHours?: number | null;
+  status: 'PRESENT' | 'ABSENT' | 'HALF_DAY' | 'ON_DUTY';
+  bestQualityScore?: number | null;
+  observationsCount: number;
+  ppeViolationsCount: number;
+  updatedAt: string;
+}
+
+export interface AttendanceSummary {
+  date: string;
+  totalRegistered: number;
+  totalPresent: number;
+  currentlyOnSite: number;
+  attendanceRate: number;
+  totalPpeViolationsToday: number;
+}
 
 export interface AnomalyAlertEvent {
   id: string;
@@ -118,6 +177,9 @@ export interface AnomalyAlertEvent {
   confidence: number;
   severity?: string;
   trackId?: number;
+  employeeId?: string | null;
+  employeeName?: string | null;
+  alertMessage?: string | null;
   firstSeenAt: string;
   confirmedAt: string;
   endedAt?: string | null;

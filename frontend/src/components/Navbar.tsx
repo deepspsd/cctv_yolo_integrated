@@ -20,6 +20,8 @@ import {
   HelpCircle,
   Volume2,
   VolumeX,
+  CalendarCheck,
+  Users,
 } from 'lucide-react';
 import { User, AppView } from '../types';
 import { soundService } from '../services/soundService';
@@ -143,31 +145,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           {/* Right Action Stack */}
-          <div className="flex items-center gap-2.5 sm:gap-3">
-            {/* Direct Quick Link to AI Alerts & Proof Gallery */}
-            <button
-              id="header-alerts-btn"
-              type="button"
-              onClick={() => {
-                soundService.playTactileBlip(850, 0.02);
-                handleLinkClick('alerts');
-              }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[12px] font-medium transition-all cursor-pointer ${
-                activeSection === 'alerts'
-                  ? 'border-red-500/50 bg-red-500/15 text-red-400 shadow-[0_0_12px_rgba(239,68,68,0.25)]'
-                  : 'border-red-500/30 bg-red-950/20 text-red-400 hover:border-red-500/60'
-              }`}
-              title="View Real-Time AI Alerts & Proof Gallery"
-            >
-              <ShieldAlert className="w-3.5 h-3.5 text-red-400 animate-pulse" />
-              <span className="font-semibold">Alerts & Proof</span>
-              {alertCount > 0 && (
-                <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-500 text-white leading-none">
-                  {alertCount}
-                </span>
-              )}
-            </button>
-
+          <div className="flex items-center gap-3 sm:gap-3.5">
             {/* Live Socket Telemetry Indicator (Click to open Gateway Diagnostics) */}
             <button
               id="telemetry-pill"
@@ -385,7 +363,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 soundService.playTactileBlip(drawerOpen ? 550 : 700, 0.025);
                 setDrawerOpen(!drawerOpen);
               }}
-              className="flex items-center gap-2 px-4 py-2 bg-[#0a0a0a] dark:bg-orange-500 text-white dark:text-black font-semibold rounded-full text-[14px] tracking-tight hover:bg-black/80 dark:hover:bg-orange-400 transition-all cursor-pointer shadow-sm active:scale-98"
+              className="relative flex items-center gap-2 px-4 py-2 bg-[#0a0a0a] dark:bg-orange-500 text-white dark:text-black font-semibold rounded-full text-[14px] tracking-tight hover:bg-black/80 dark:hover:bg-orange-400 transition-all cursor-pointer shadow-sm active:scale-98"
               aria-label={drawerOpen ? 'Close navigation drawer' : 'Open navigation drawer'}
               aria-expanded={drawerOpen}
             >
@@ -394,6 +372,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <X className="w-4 h-4 text-white dark:text-black" />
               ) : (
                 <ChevronUp className="w-4 h-4 text-white dark:text-black rotate-180 group-hover:translate-y-[-1px] transition-transform" />
+              )}
+              {!drawerOpen && alertCount > 0 && (
+                <span className="absolute -top-1 -right-1 flex h-4 min-w-4 px-1 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white shadow animate-pulse">
+                  {alertCount > 99 ? '99+' : alertCount}
+                </span>
               )}
             </button>
           </div>
@@ -505,50 +488,47 @@ export const Navbar: React.FC<NavbarProps> = ({
             Platform Navigation • Control Center
           </p>
           <nav className="flex flex-col divide-y divide-black/[0.05] dark:divide-white/[0.06] border-y border-black/[0.05] dark:border-white/[0.06]">
-            {/* Custom nav items including AI Alerts at the starting position */}
+            {/* Custom nav items including Attendance and Employees in drawer */}
             {[
+              { id: 'attendance', label: 'Automatic Attendance', icon: CalendarCheck },
+              { id: 'employees', label: 'Employee Directory & Biometrics', icon: Users },
               { id: 'alerts', label: 'AI Alerts & Proof Gallery', icon: ShieldAlert },
               { id: 'cameras', label: 'Camera Management', icon: Video },
               { id: 'zones', label: 'Zones & Facilities', icon: Layers },
               { id: 'gateway', label: 'RTSP Stream Gateway', icon: Activity },
-              { id: 'storage', label: 'Storage & Retention', icon: Database, comingSoon: true },
-              { id: 'settings', label: 'Settings', icon: Sliders, comingSoon: true },
             ].map((link, idx) => {
               const Icon = link.icon;
               const isSelected = activeSection === link.id;
-              const isComingSoon = Boolean((link as any).comingSoon);
               return (
                 <button
                   key={link.id}
                   id={`nav-link-${link.id}`}
-                  onClick={() => handleLinkClick(link.id, isComingSoon)}
-                  disabled={isComingSoon}
-                  className={`group flex items-center justify-between text-left py-2.5 sm:py-3 transition-all ${
-                    isComingSoon
-                      ? 'cursor-not-allowed opacity-50 text-[#8c8c8c] dark:text-[#71717a]'
-                      : isSelected
-                      ? 'cursor-pointer text-[#0a0a0a] dark:text-orange-400'
-                      : 'cursor-pointer text-[#6b6b6b] dark:text-[#a1a1aa] hover:text-[#0a0a0a] dark:hover:text-white'
+                  onClick={() => handleLinkClick(link.id, false)}
+                  className={`group flex items-center justify-between text-left py-2.5 sm:py-3 transition-all cursor-pointer ${
+                    isSelected
+                      ? 'text-[#0a0a0a] dark:text-orange-400'
+                      : 'text-[#6b6b6b] dark:text-[#a1a1aa] hover:text-[#0a0a0a] dark:hover:text-white'
                   }`}
                 >
                   <div className="flex items-center gap-3 sm:gap-4 min-w-0">
                     <span className="text-[12px] sm:text-[13px] font-mono text-[#a3a3a3] dark:text-[#71717a] group-hover:text-black group-hover:dark:text-orange-400 transition-colors shrink-0">
                       [0{idx + 1}]
                     </span>
-                    <span className={`text-[20px] sm:text-[26px] md:text-[30px] font-medium tracking-tight truncate ${!isComingSoon ? 'transition-transform group-hover:translate-x-1.5' : ''}`}>
+                    <span className="text-[20px] sm:text-[26px] md:text-[30px] font-medium tracking-tight truncate transition-transform group-hover:translate-x-1.5">
                       {link.label}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                    {isComingSoon ? (
-                      <span className="px-2.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider bg-black/5 dark:bg-white/10 text-[#8c8c8c] dark:text-[#a1a1aa] border border-black/10 dark:border-white/10 rounded-full">
-                        Coming Soon
-                      </span>
-                    ) : isSelected ? (
+                    {isSelected ? (
                       <span className="px-2.5 py-0.5 text-[11px] font-semibold bg-[#17c964]/10 dark:bg-orange-500/15 text-[#17c964] dark:text-orange-400 rounded-full">
                         Active View
                       </span>
                     ) : null}
+                    {link.id === 'alerts' && alertCount > 0 && (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-500 text-white leading-none animate-pulse">
+                        {alertCount} New Alerts
+                      </span>
+                    )}
                     <Icon className="w-4 h-4 sm:w-5 sm:h-5 text-black/30 dark:text-white/30 group-hover:text-black group-hover:dark:text-orange-400 group-hover:translate-x-1 transition-all" />
                   </div>
                 </button>

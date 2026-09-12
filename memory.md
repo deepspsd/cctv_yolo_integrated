@@ -1,6 +1,77 @@
 # Memory - CCTV Priya Textiles
 
 ## Current Status
+- Completed & Deployed Database Photo Encryption & Anti-Leak Privacy Architecture:
+  - Database schema updated: `AnomalyEvent.encrypted_image` (`BLOB` / `LargeBinary`) added with AES-256-GCM authenticated encryption.
+  - Backfilled and encrypted all 58 historical incident evidence photos directly into SQLite database `cctv.db` using `encrypt_bytes(data)`.
+  - AI State Machine updated (`ai_state_machine.py`): Newly detected anomalies encode annotated JPEG frames in memory and encrypt via AES-256-GCM before persisting directly into `AnomalyEvent.encrypted_image`.
+  - Streaming endpoint updated (`GET /api/anomalies/{id}/evidence`): Dynamically decrypts JPEG bytes in memory with `decrypt_bytes()` and streams directly to authorized user (`Response(content=decrypted, media_type="image/jpeg")`). Zero plain image exposure even in event of database theft.
+  - Deletion (`DELETE /api/anomalies/{id}`): Erases database row (permanently purging encrypted BLOB) and unlinks any residual physical snapshot file.
+  - Frontend evidence loading (`anomalyService.ts` & `AlertsPage.tsx`): Directly streams encrypted images from `/api/anomalies/{id}/evidence?token=...` with full thumbnail and modal zoom support.
+- Completed & Deployed Awesome Interactive Calendar UI in Alerts Page (`AlertsPage.tsx`):
+  - Diagnosed calendar issue: Invisible native `<input type="date">` overlay fails to open browser picker dialog on text clicks in Chromium/Electron.
+  - Built custom high-tech cyber calendar popover:
+    - Month and year navigation with previous/next chevron buttons, centered month/year display, and quick "Today" jump.
+    - Weekday labels (`Su`, `Mo`, `Tu`, `We`, `Th`, `Fr`, `Sa`) in clean monospace typography.
+    - 35-42 day interactive grid:
+      - Days with recorded incidents display glowing amber pulse dots and tooltips with incident/photo counts.
+      - Current selected date highlighted in vibrant orange gradient with drop shadow.
+      - "Today" highlighted with subtle amber ring.
+    - "Incident Dates in System" quick-picker ribbon: 1-click pills for every date with recorded incidents (e.g. `11 Sep (46)`).
+    - Instant "Show All Dates" reset action.
+    - Click-outside and `Escape` key dismiss listeners with smooth fade-in animations and tactile sound effects.
+- Completed & Deployed Multi-Tenant Camera & Evidence Isolation:
+  - Database schema updated: `Camera.user_id` and `AnomalyEvent.user_id` foreign keys (`users.id`) added with indexes and cascade delete.
+  - Multi-user data leakage eliminated: `GET /api/anomalies`, `GET /api/anomalies/dates`, `GET /api/anomalies/{id}`, `GET /api/anomalies/{id}/evidence`, `PATCH /api/anomalies/{id}/status`, and `DELETE /api/anomalies/{id}` strictly enforce user ownership. Users cannot see, stream, or inspect other users' cameras or violation snapshots.
+  - AI engine persistence updated (`ai_state_machine.py`): all newly persisted anomaly records store `user_id` fetched from camera owner.
+  - Excluded `PERSON_DETECTED` from anomaly persistence: `PERSON_DETECTED` is strictly filtered out from state machine observation, persistence, and querying. Purged 302 spurious raw person rows from database; only actual PPE/machinery violations remain (59 records).
+  - Permanent Incident & Evidence Snapshot File Deletion: `DELETE /api/anomalies/{id}` endpoint checks user ownership, deletes the physical `.jpg` snapshot file from disk (`backend/data/evidence/...`), deletes `AnomalyEvent` row, and commits.
+  - Frontend Incident & Evidence Card Deletion: Added inline delete trash button on cards, table rows, and evidence viewer modal ("Delete Incident & Erase Photo") with instant state cleanup and toast notification.
+  - Redesigned Calendar Component: Removed the clumsy date pills row (`All Dates`, `12 Sept 2026 (5)`, etc.). Replaced with a unified, high-tech calendar component featuring formatted display text (`Select Date` / `12 Sep 2026`), native date picker overlay, clear (`×`) button, and a quick `Today` button.
+  - Redesigned Camera Filter Banner: Replaced stretched gradient banner with an industrial CCTV HUD status bar (`#090b10` dark panel, cyber scanlines, live pulse badge, camera code/name breadcrumb, zone indicator, evidence record badge, and clean "Show All" button).
+- Completed & Deployed Full Production-Ready Automatic Attendance, Multi-Angle Face Recognition, Body Re-ID, Identity Fusion, PPE Violation Detection with Named Alerts ("XXX has not worn hardhat" vs "Unidentified person"), Evidence System, and CSV/XLSX Export on top of existing CCTV architecture.
+- Frontend Navbar & Navigation Hardened:
+  - Fixed Menu Drawer Navigation: `handleNavigate` in `App.tsx` now switches `currentView` to `attendance` and `employees` when clicked in drawer navigation (previously fell through to default `cameras` fallback).
+  - Fixed `EmployeesPage.tsx` TypeError: Backend returns `name` and `role` from SQL schema while frontend types expected `fullName` and `designation`. Normalized payload in `employeeService.ts` and added null-safe string split fallbacks `(emp.fullName || 'Staff').split(' ').filter(Boolean)` in both `EmployeesPage.tsx` and `AttendancePage.tsx`.
+  - Cleaned and de-cluttered top navbar: removed redundant quick links (`Cameras`, `Attendance`, `Employees`, `Alerts & Proof`) to the left of Streaming Nodes. All full-page controls are accessible via the full-screen Menu drawer.
+  - Kept Streaming Nodes telemetry pill with live ping animation and direct access to Gateway diagnostics.
+  - Maintained all right-side controls next to Streaming Nodes: Sound Effects toggle, Dark Ops theme toggle, Keyboard Shortcuts (`?`), Auth buttons (`Sign In`/`Register`), and `Menu` toggle pill.
+  - Added live notification badge on `Menu` pill and inside Menu drawer on `AI Alerts & Proof Gallery` when new alerts are active.
+  - Generous spacing and layout across wide and mobile viewports.
+    - Full theme compliance with matt black (`#09090b` / `#121217`) and cyber orange accents across `AttendancePage.tsx` and `EmployeesPage.tsx`.
+- Frontend URL Routing & Backend API Mapping:
+  - Enabled HTML5 History routing (`window.history.pushState` & `popstate`):
+    - `http://localhost:3000/` or `/cameras` → Camera Surveillance Grid/Table
+    - `http://localhost:3000/alerts` or `/evidence` → AI Alerts & Incident Evidence Gallery
+    - `http://localhost:3000/attendance` → Automatic Attendance Terminal
+    - `http://localhost:3000/employees` or `/staff` → Biometric Employee Management
+    - `http://localhost:3000/login` & `/register` → Authentication Terminals
+  - Backend API Endpoints (FastAPI on `http://localhost:5000`):
+    - Cameras: `GET /api/cameras`, `POST /api/cameras`, `GET /api/cameras/summary`
+    - Alerts/Evidence: `GET /api/anomalies`, `GET /api/anomalies/dates`, `PATCH /api/anomalies/{id}/status`
+    - Attendance: `GET /api/attendance/summary`, `GET /api/attendance/records`, `GET /api/attendance/export`
+    - Employees: `GET /api/employees`, `POST /api/employees`, `POST /api/employees/{id}/faces`
+    - Auth: `POST /api/auth/login`, `POST /api/auth/register`, `GET /api/auth/me`
+  - Design standard matching `SurveillanceGridCard.tsx`: Dark industrial CCTV monitor viewport, scanline overlay (`bg-[length:100%_4px]`), top status badge row (monospace code pill, angle/violation tags, live pulse indicators), bottom viewport telemetry bar, and clean card footer.
+  - Employees Page (`EmployeesPage.tsx`):
+    - Redesigned search & filter bar matching Camera Management toolbar (rounded-2xl `#111116` container, command search input with clear button, custom department dropdown with arrow, staff counter pill).
+    - Employee card redesign: 16:9 black CCTV screen viewport with scanlines, monospace `EMP-XXX` badge, biometric angle badge (`X ANGLES` / `PENDING`), active status pill, cyber orange bottom viewport bar, and smooth hover quick-action overlay ("Enroll Biometrics" / "Update Face Model").
+  - Attendance Page (`AttendancePage.tsx`):
+    - Added dedicated **Attendance Cards Grid View** matching Camera Cards (in addition to existing High-Density Table View).
+    - Cards feature CCTV viewport with scanlines, monospace employee code tag, `VIOLATIONS` pulse pill / `COMPLIANT` badge, centered staff initials avatar, clock-in camera node and time in bottom viewport bar, total working hours, and last-seen telemetry in card footer.
+    - Upgraded top summary KPI cards (Present, On Time, Late, Violations) with matte black `#111116` container, hover lift, and clear contrast.
+  - Alerts & Evidence Page (`AlertsPage.tsx`):
+    - Removed tacky `backend/data Connected` badge. Replaced with professional `LIVE AI MONITORING ACTIVE` pill with glowing emerald status beacon.
+    - Fixed date filtering: Added multi-timezone matching (`getAlertDateKeys`) supporting direct timestamp strings, UTC, and local browser timezones without dropping records across midnight boundaries.
+    - Backend date & evidence discovery enhanced: `GET /api/anomalies/dates` dynamically scans SQLite and physical storage `backend/data/evidence/YYYY/MM/DD/*/*.jpg`.
+    - Dynamic backend historical query: When user selects any date, `AlertsPage` automatically triggers `anomalyService.getAnomalies({ date: selectedDate })` and merges records with live alerts.
+    - Added comprehensive multi-criteria sorting: `Newest First`, `Oldest First`, `Highest Severity`, and `Highest Confidence`.
+    - Segmented Incident Filter: Clear segment buttons for `All Incidents (N)` vs `With Photo Proof (N)` so events are never hidden unintentionally.
+    - Upgraded date toolbar with up to 6 quick date pill selectors, native styled date picker, clear button, and tactile sound effects.
+- Test Suites:
+  - Backend: 24/24 unit tests passing in pytest (`tests/test_attendance_and_identity.py`, `tests/test_ai_system.py`, `tests/test_ai_engine.py`, `tests/test_auth.py`, `tests/test_cameras.py`).
+  - Environment Fixes: Fixed `.venv` activation paths and shebangs pointing to old `cctv_priya_textiles` folder. Installed `openpyxl>=3.1.5` in both `.venv` environments. Fixed `reload_templates_cache(db)` signature in `AttendanceService` to accept optional `db_session`.
+    - Frontend: Zero TypeScript errors; `tsc --noEmit` and Vite production bundle cleanly compiled (`npm run lint && npm run build`). Fixed missing `soundService` import in `AlertsPage.tsx` and missing `X` icon import in `AttendancePage.tsx`.
 - Complete 20-Camera Real-Time Continuous AI Inference & Anomaly Detection System deployed:
   - Hardware Acceleration: Upgraded PyTorch to `torch==2.5.1+cu121` with native CUDA support on user's **NVIDIA GeForce RTX 3050 Laptop GPU (6GB VRAM)**.
   - Performance: 20-camera benchmark verified at **76.5 Total Inference FPS** (avg 3.8 FPS/camera vs 5.0 target) with **12.9ms p50 latency** and minimal **86.5 MB VRAM** footprint (well under 6GB VRAM and 12GB RAM limits).

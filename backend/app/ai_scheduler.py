@@ -21,6 +21,10 @@ from app.ai_tracker import multi_camera_tracker
 from app.ai_state_machine import state_machine
 from app.ai_stream_reader import CameraStreamReader
 from app.websocket_manager import ws_manager
+from app.face_pipeline import face_pipeline, FaceQualityCategory
+from app.reid_pipeline import reid_pipeline
+from app.identity_fusion import identity_fusion, IdentityState
+from app.attendance_service import attendance_service
 
 logger = logging.getLogger("ai_scheduler")
 
@@ -548,6 +552,59 @@ class FairMultiCameraScheduler:
         tracker = multi_camera_tracker.get_tracker(slot.camera_id)
         active_tracks = tracker.update(person_detections)
 
+        # 1b. Surveillance Identity Pipeline (Face Quality + ArcFace + Re-ID + Fusion)
+        for trk in active_tracks:
+            body_crop = reid_pipeline.extract_body_crop(frame, trk.box)
+            face_crop = face_pipeline.extract_face_region(body_crop) if body_crop is not None else None
+
+            face_match_id = None
+            face_sim = 0.0
+            face_quality = FaceQualityCategory.REJECTED
+            face_q_score = 0.0
+
+            if face_crop is not None:
+                face_quality, face_q_score, face_emb, _ = face_pipeline.process_face(face_crop)
+                if face_emb is not None:
+                    face_match_id, face_sim, _ = face_pipeline.match_against_templates(
+                        face_emb, identity_fusion.employee_face_templates
+                    )
+
+            reid_match_id = None
+            reid_sim = 0.0
+            if body_crop is not None:
+                body_emb = reid_pipeline.compute_embedding(body_crop)
+                reid_match_id, reid_sim, _ = reid_pipeline.match_against_templates(
+                    body_emb, identity_fusion.employee_body_templates
+                )
+
+            # Fuse multi-modal signals
+            id_state, emp_id, emp_name, id_conf = identity_fusion.fuse_and_identify(
+                camera_id=slot.camera_id,
+                track_id=trk.track_id,
+                face_match_id=face_match_id,
+                face_sim=face_sim,
+                face_quality=face_quality,
+                face_quality_score=face_q_score,
+                reid_match_id=reid_match_id,
+                reid_sim=reid_sim
+            )
+
+            trk.identity_state = id_state.value
+            trk.employee_id = emp_id
+            trk.employee_name = emp_name
+            trk.identity_confidence = id_conf
+
+            # If CONFIRMED employee observation, trigger attendance
+            if id_state == IdentityState.CONFIRMED and emp_id:
+                self._dispatch_attendance_observation(
+                    employee_id=emp_id,
+                    camera_id=slot.camera_id,
+                    track_id=trk.track_id,
+                    identity_confidence=id_conf,
+                    face_confidence=face_sim if face_match_id else None,
+                    body_reid_confidence=reid_sim if reid_match_id else None
+                )
+
         # 2. PPE Spatial Association
         observations = multi_camera_tracker.associate_ppe_to_persons(
             camera_id=slot.camera_id,
@@ -649,6 +706,40 @@ class FairMultiCameraScheduler:
                 )
         except Exception as e:
             logger.debug(f"Event dispatch thread notice: {e}")
+
+    def _dispatch_attendance_observation(
+        self,
+        employee_id: str,
+        camera_id: str,
+        track_id: Optional[int],
+        identity_confidence: float,
+        face_confidence: Optional[float] = None,
+        body_reid_confidence: Optional[float] = None
+    ):
+        """
+        Dispatches confirmed employee observation to attendance service asynchronously.
+        """
+        try:
+            loop = self.main_loop
+            if not loop or not loop.is_running():
+                try:
+                    loop = asyncio.get_event_loop()
+                except Exception:
+                    loop = None
+            if loop and loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    attendance_service.record_confirmed_observation(
+                        employee_id=employee_id,
+                        camera_id=camera_id,
+                        track_id=track_id,
+                        identity_confidence=identity_confidence,
+                        face_confidence=face_confidence,
+                        body_reid_confidence=body_reid_confidence
+                    ),
+                    loop
+                )
+        except Exception as e:
+            logger.debug(f"Attendance dispatch notice: {e}")
 
     def get_aggregate_metrics(self) -> Dict[str, Any]:
         """

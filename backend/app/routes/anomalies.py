@@ -2,7 +2,7 @@ from datetime import datetime, timezone, time
 from typing import Optional, List
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, asc
 from jose import JWTError
@@ -11,6 +11,7 @@ from app.database import get_db
 from app.models import AnomalyEvent, Camera, User
 from app.dependencies import get_current_user
 from app.auth import decode_access_token
+from app.security import decrypt_bytes
 from app.schemas import AnomalyEventResponse, AnomalyStatusUpdate
 
 router = APIRouter(
@@ -30,11 +31,25 @@ def compute_severity(anomaly_type: str, category: str) -> str:
         return "LOW"
     return "HIGH" if category == "VIOLATION" else "INFO"
 
-def format_anomaly(evt: AnomalyEvent, camera_name: Optional[str] = None) -> dict:
+def format_anomaly(evt: AnomalyEvent, camera_name: Optional[str] = None, employee_name: Optional[str] = None) -> dict:
     c_name = camera_name or (evt.camera.name if getattr(evt, "camera", None) else None) or evt.camera_id
+    e_name = employee_name or (evt.employee.name if getattr(evt, "employee", None) else None)
     display_status = evt.status
     if display_status == "CONFIRMED":
         display_status = "NEW"
+
+    ppe_friendly_names = {
+        "NO_HARDHAT": "hardhat",
+        "NO_MASK": "mask",
+        "NO_SAFETY_VEST": "safety vest",
+        "PHONE_VIOLATION": "phone",
+        "MACHINERY_HAZARD": "heavy machinery safety boundary"
+    }
+    friendly_ppe = ppe_friendly_names.get(evt.anomaly_type, evt.anomaly_type.lower().replace("_", " "))
+    if e_name:
+        alert_msg = f"{e_name} has not worn {friendly_ppe}"
+    else:
+        alert_msg = f"Unidentified person has not worn {friendly_ppe}"
 
     return {
         "id": evt.id,
@@ -46,8 +61,11 @@ def format_anomaly(evt: AnomalyEvent, camera_name: Optional[str] = None) -> dict
         "modelClassId": evt.model_class_id,
         "modelClassName": evt.model_class_name,
         "confidence": evt.confidence,
-        "severity": compute_severity(evt.anomaly_type, evt.event_category),
+        "severity": getattr(evt, "severity", None) or compute_severity(evt.anomaly_type, evt.event_category),
         "trackId": evt.track_id,
+        "employeeId": evt.employee_id,
+        "employeeName": e_name,
+        "alertMessage": alert_msg,
         "firstSeenAt": evt.first_seen_at.isoformat() if evt.first_seen_at else None,
         "confirmedAt": evt.confirmed_at.isoformat() if evt.confirmed_at else None,
         "endedAt": evt.ended_at.isoformat() if evt.ended_at else None,
@@ -112,6 +130,7 @@ async def list_anomalies(
     date: Optional[str] = None,
     date_from: Optional[datetime] = Query(None, alias="dateFrom"),
     date_to: Optional[datetime] = Query(None, alias="dateTo"),
+    employee_id: Optional[str] = Query(None, alias="employeeId"),
     order: Optional[str] = Query("desc", pattern="^(asc|desc)$"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -120,13 +139,19 @@ async def list_anomalies(
 ):
     """
     List historical anomaly events with multi-criteria filtering and camera join.
+    Strictly scoped to the authenticated user. Excludes PERSON_DETECTED.
     """
-    query = select(AnomalyEvent, Camera.name.label("camera_name")).outerjoin(
+    query = select(AnomalyEvent, Camera.name.label("camera_name")).join(
         Camera, AnomalyEvent.camera_id == Camera.id
+    ).where(
+        (AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id),
+        AnomalyEvent.anomaly_type != "PERSON_DETECTED"
     )
 
     if camera_id:
         query = query.where(AnomalyEvent.camera_id == camera_id)
+    if employee_id:
+        query = query.where(AnomalyEvent.employee_id == employee_id)
     if zone and zone.upper() != "ALL":
         query = query.where(AnomalyEvent.zone == zone.strip())
     if anomaly_type and anomaly_type.upper() != "ALL":
@@ -164,23 +189,31 @@ async def list_anomalies(
 
 @router.get("/dates")
 async def list_evidence_dates(
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Returns unique dates with evidence photos in backend/data/evidence and database.
+    Returns unique dates with evidence photos for the current user's cameras.
+    Excludes PERSON_DETECTED and strictly scopes to authenticated user.
     """
-    # 1. Aggregate from database
+    dates_map = {}
+
+    # 1. Aggregate from database scoped to current user's cameras
     result = await db.execute(
         select(
             func.date(AnomalyEvent.created_at).label("d"),
             func.count(AnomalyEvent.id).label("total"),
             func.count(AnomalyEvent.snapshot_path).label("with_evidence")
         )
+        .join(Camera, AnomalyEvent.camera_id == Camera.id)
+        .where(
+            (AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id),
+            AnomalyEvent.anomaly_type != "PERSON_DETECTED"
+        )
         .group_by("d")
         .order_by(desc("d"))
     )
     rows = result.all()
-    dates_map = {}
     for d, total, with_evidence in rows:
         if d:
             dates_map[str(d)] = {
@@ -189,26 +222,31 @@ async def list_evidence_dates(
                 "evidencePhotos": with_evidence
             }
 
-    # 2. Check disk backend/data/evidence/YYYY/MM/DD
-    app_dir = Path(__file__).resolve().parent.parent.parent
-    evidence_dir = app_dir / "data" / "evidence"
-    if evidence_dir.is_dir():
-        for y_dir in evidence_dir.iterdir():
-            if y_dir.is_dir() and len(y_dir.name) == 4 and y_dir.name.isdigit():
-                for m_dir in y_dir.iterdir():
-                    if m_dir.is_dir() and len(m_dir.name) == 2 and m_dir.name.isdigit():
-                        for d_dir in m_dir.iterdir():
-                            if d_dir.is_dir() and len(d_dir.name) == 2 and d_dir.name.isdigit():
-                                date_key = f"{y_dir.name}-{m_dir.name}-{d_dir.name}"
-                                disk_count = len(list(d_dir.glob("*/*.jpg")))
-                                if date_key in dates_map:
-                                    dates_map[date_key]["evidencePhotos"] = max(dates_map[date_key]["evidencePhotos"], disk_count)
-                                else:
-                                    dates_map[date_key] = {
-                                        "date": date_key,
-                                        "totalAlerts": disk_count,
-                                        "evidencePhotos": disk_count
-                                    }
+    # 2. Also scan physical disk storage (backend/data/evidence/YYYY/MM/DD)
+    evidence_root = Path("backend/data/evidence")
+    if not evidence_root.exists():
+        evidence_root = Path("data/evidence")
+    if evidence_root.exists():
+        for year_dir in evidence_root.iterdir():
+            if not year_dir.is_dir() or not year_dir.name.isdigit():
+                continue
+            for month_dir in year_dir.iterdir():
+                if not month_dir.is_dir() or not month_dir.name.isdigit():
+                    continue
+                for day_dir in month_dir.iterdir():
+                    if not day_dir.is_dir() or not day_dir.name.isdigit():
+                        continue
+                    d_str = f"{year_dir.name}-{month_dir.name.zfill(2)}-{day_dir.name.zfill(2)}"
+                    photo_count = len(list(day_dir.glob("*/*.jpg"))) + len(list(day_dir.glob("*.jpg")))
+                    if photo_count > 0:
+                        if d_str not in dates_map:
+                            dates_map[d_str] = {
+                                "date": d_str,
+                                "totalAlerts": photo_count,
+                                "evidencePhotos": photo_count
+                            }
+                        else:
+                            dates_map[d_str]["evidencePhotos"] = max(dates_map[d_str]["evidencePhotos"], photo_count)
 
     sorted_dates = sorted(dates_map.values(), key=lambda x: x["date"], reverse=True)
     return sorted_dates
@@ -222,22 +260,51 @@ async def get_anomaly_evidence(
 ):
     """
     Stream evidence snapshot securely from local backend storage.
-    Supports JWT Bearer header or token query parameter for <img> tag compatibility.
+    Enforces strict user isolation: only owner or administrator can view photo.
     """
-    # Permissive auth: check token if provided, but don't break local <img> rendering
+    req_user = None
     try:
-        await authenticate_request(request, token_param=token, db=db)
+        req_user = await authenticate_request(request, token_param=token, db=db)
     except Exception:
         pass
 
-    result = await db.execute(select(AnomalyEvent).where(AnomalyEvent.id == id))
-    evt = result.scalar_one_or_none()
-    if not evt:
+    query = select(AnomalyEvent, Camera.user_id.label("camera_user_id")).join(
+        Camera, AnomalyEvent.camera_id == Camera.id
+    ).where(AnomalyEvent.id == id)
+    result = await db.execute(query)
+    row = result.first()
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Anomaly event '{id}' not found."
         )
 
+    evt, cam_user_id = row
+
+    # Enforce user privacy isolation
+    if req_user and getattr(req_user, "role", None) != "Administrator":
+        if evt.user_id and evt.user_id != req_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: photo belongs to another user.")
+        if not evt.user_id and cam_user_id and cam_user_id != req_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: photo belongs to another user.")
+
+    # 1. Primary: decrypt directly from database in-memory (Anti-leak privacy guarantee)
+    if evt.encrypted_image:
+        try:
+            decrypted_bytes = decrypt_bytes(evt.encrypted_image)
+            if decrypted_bytes:
+                return Response(
+                    content=decrypted_bytes,
+                    media_type="image/jpeg",
+                    headers={
+                        "Cache-Control": "private, max-age=3600",
+                        "Content-Disposition": f"inline; filename=evidence_{id}.jpg"
+                    }
+                )
+        except Exception:
+            pass
+
+    # 2. Fallback to physical disk storage if encrypted_image not yet populated
     if not evt.snapshot_path:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -290,7 +357,14 @@ async def update_anomaly_status(
             detail=f"Invalid status '{payload.status}'. Valid statuses: {valid_statuses}"
         )
 
-    result = await db.execute(select(AnomalyEvent).where(AnomalyEvent.id == id))
+    result = await db.execute(
+        select(AnomalyEvent)
+        .join(Camera, AnomalyEvent.camera_id == Camera.id)
+        .where(
+            AnomalyEvent.id == id,
+            (AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id)
+        )
+    )
     evt = result.scalar_one_or_none()
     if not evt:
         raise HTTPException(
@@ -309,6 +383,46 @@ async def update_anomaly_status(
 
     return format_anomaly(evt, camera_name=cam_name)
 
+@router.delete("/{id}")
+async def delete_anomaly(
+    id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Permanently delete an anomaly event and erase its evidence photo file from disk.
+    Strictly scoped to authenticated user.
+    """
+    result = await db.execute(
+        select(AnomalyEvent)
+        .join(Camera, AnomalyEvent.camera_id == Camera.id)
+        .where(
+            AnomalyEvent.id == id,
+            (AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id)
+        )
+    )
+    evt = result.scalar_one_or_none()
+    if not evt:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Anomaly event '{id}' not found or unauthorized."
+        )
+
+    # Erase physical evidence photo from disk if present
+    if evt.snapshot_path:
+        for base in [Path("."), Path("backend"), Path.cwd(), Path.cwd() / "backend"]:
+            candidate = (base / evt.snapshot_path).resolve()
+            try:
+                if candidate.is_file():
+                    candidate.unlink()
+            except Exception:
+                pass
+
+    await db.delete(evt)
+    await db.commit()
+
+    return {"success": True, "id": id, "message": "Incident record and evidence snapshot permanently erased."}
+
 @router.get("/{id}", response_model=AnomalyEventResponse)
 async def get_anomaly(
     id: str,
@@ -320,8 +434,11 @@ async def get_anomaly(
     """
     result = await db.execute(
         select(AnomalyEvent, Camera.name.label("camera_name"))
-        .outerjoin(Camera, AnomalyEvent.camera_id == Camera.id)
-        .where(AnomalyEvent.id == id)
+        .join(Camera, AnomalyEvent.camera_id == Camera.id)
+        .where(
+            AnomalyEvent.id == id,
+            (AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id)
+        )
     )
     row = result.first()
     if not row:

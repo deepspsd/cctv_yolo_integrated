@@ -62,6 +62,8 @@ def format_camera_response(cam: Camera) -> dict:
     masked = mask_rtsp_url(cam.rtsp_url)
     return {
         "id": cam.id,
+        "userId": cam.user_id,
+        "user_id": cam.user_id,
         "name": cam.name,
         "code": cam.code,
         "zone": cam.zone,
@@ -88,13 +90,14 @@ async def list_cameras(
     search: str | None = None,
     zone: str | None = None,
     status: str | None = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    List cameras. Supports optional query filtering: search, zone, status.
+    List cameras belonging to authenticated user. Supports optional query filtering: search, zone, status.
     Never returns passwords or unmasked credentials.
     """
-    query = select(Camera)
+    query = select(Camera).where(Camera.user_id == current_user.id)
 
     if zone and zone.upper() != "ALL":
         query = query.where(Camera.zone == zone.upper().strip())
@@ -123,11 +126,14 @@ async def list_cameras(
     return [format_camera_response(cam) for cam in cameras]
 
 @router.get("/summary", response_model=CameraSummaryResponse)
-async def get_cameras_summary(db: AsyncSession = Depends(get_db)):
+async def get_cameras_summary(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Internal summary metrics endpoint for dashboard cards.
+    Internal summary metrics endpoint for dashboard cards, scoped to user's cameras.
     """
-    result = await db.execute(select(Camera))
+    result = await db.execute(select(Camera).where(Camera.user_id == current_user.id))
     cams = result.scalars().all()
 
     total = len(cams)
@@ -136,10 +142,17 @@ async def get_cameras_summary(db: AsyncSession = Depends(get_db)):
     checking = sum(1 for c in cams if c.status == CameraStatusEnum.CHECKING)
     unknown = sum(1 for c in cams if c.status == CameraStatusEnum.UNKNOWN)
 
-    active_sess_res = await db.execute(
-        select(func.count(StreamSession.id)).where(StreamSession.ended_at == None)
-    )
-    active_viewers = active_sess_res.scalar_one() or 0
+    cam_ids = [c.id for c in cams]
+    if cam_ids:
+        active_sess_res = await db.execute(
+            select(func.count(StreamSession.id)).where(
+                StreamSession.ended_at == None,
+                StreamSession.camera_id.in_(cam_ids)
+            )
+        )
+        active_viewers = active_sess_res.scalar_one() or 0
+    else:
+        active_viewers = 0
 
     return CameraSummaryResponse(
         total=total,
@@ -151,21 +164,33 @@ async def get_cameras_summary(db: AsyncSession = Depends(get_db)):
     )
 
 @router.get("/anomalies/recent")
-async def get_recent_anomalies(limit: int = 20):
+async def get_recent_anomalies(
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Get latest AI anomalies (PPE violations, phone detections) across all cameras.
+    Get latest AI anomalies for user's cameras.
     Strictly capped at max 5 anomalies per camera.
     """
-    return ai_engine.get_all_recent_anomalies(limit=limit)
+    cam_res = await db.execute(select(Camera.id).where(Camera.user_id == current_user.id))
+    allowed_ids = set(cam_res.scalars().all())
+    return ai_engine.get_all_recent_anomalies(limit=limit, allowed_camera_ids=allowed_ids)
 
 @router.post("", response_model=CameraResponse, status_code=status.HTTP_201_CREATED)
-async def create_camera(payload: CameraCreate, db: AsyncSession = Depends(get_db)):
+async def create_camera(
+    payload: CameraCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Create a new camera record with encrypted credentials.
+    Create a new camera record scoped to current authenticated user.
     Performs initial lightweight probe and registers with MediaMTX.
     """
-    # Check duplicate name
-    existing_name = await db.execute(select(Camera).where(Camera.name == payload.name.strip()))
+    # Check duplicate name for this user
+    existing_name = await db.execute(
+        select(Camera).where(Camera.name == payload.name.strip(), Camera.user_id == current_user.id)
+    )
     if existing_name.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -180,8 +205,8 @@ async def create_camera(payload: CameraCreate, db: AsyncSession = Depends(get_db
             detail="RTSP URL must begin with rtsp:// or rtsps://"
         )
 
-    # Generate next code (e.g. CAM-001)
-    count_res = await db.execute(select(func.count(Camera.id)))
+    # Generate next code for this user (e.g. CAM-001)
+    count_res = await db.execute(select(func.count(Camera.id)).where(Camera.user_id == current_user.id))
     total_count = count_res.scalar_one() or 0
     code = f"CAM-{str(total_count + 1).zfill(3)}"
     camera_id = f"cam_{datetime.now().strftime('%Y%m%d%H%M%S')}_{total_count + 1}"
@@ -202,6 +227,7 @@ async def create_camera(payload: CameraCreate, db: AsyncSession = Depends(get_db
 
     new_camera = Camera(
         id=camera_id,
+        user_id=current_user.id,
         name=payload.name.strip(),
         code=code,
         zone=payload.zone.upper().strip(),
@@ -240,11 +266,15 @@ async def create_camera(payload: CameraCreate, db: AsyncSession = Depends(get_db
     return resp_dict
 
 @router.get("/{camera_id}", response_model=CameraResponse)
-async def get_camera(camera_id: str, db: AsyncSession = Depends(get_db)):
+async def get_camera(
+    camera_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
     Get camera details and real-time metadata without exposing credentials.
     """
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(
@@ -296,8 +326,8 @@ async def update_camera(
             detail="User account is deactivated. Camera edit denied."
         )
 
-    # 3. Lookup camera to edit
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    # 3. Lookup camera to edit (strictly scoped to current user)
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(
@@ -305,10 +335,14 @@ async def update_camera(
             detail=f"Camera with ID '{camera_id}' not found."
         )
 
-    # 4. Check duplicate name with other cameras
+    # 4. Check duplicate name with other cameras for this user
     if payload.name:
         existing = await db.execute(
-            select(Camera).where(Camera.name == payload.name.strip(), Camera.id != camera_id)
+            select(Camera).where(
+                Camera.name == payload.name.strip(),
+                Camera.id != camera_id,
+                Camera.user_id == current_user.id
+            )
         )
         if existing.scalar_one_or_none():
             raise HTTPException(
@@ -354,11 +388,15 @@ async def update_camera(
     return resp_dict
 
 @router.delete("/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_camera(camera_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_camera(
+    camera_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
     Delete a camera, end active stream sessions, and release MediaMTX path.
     """
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(
@@ -385,7 +423,7 @@ async def delete_camera(camera_id: str, db: AsyncSession = Depends(get_db)):
     await mediamtx_manager.remove_camera_path(camera_id)
 
     # Broadcast event
-    await ws_manager.broadcast("CAMERA_DELETED", {"id": camera_id, "name": cam_name})
+    await ws_manager.broadcast("CAMERA_DELETED", {"id": camera_id, "name": cam_name, "userId": current_user.id})
     return None
 
 @router.post("/test", response_model=CameraTestResponse)
@@ -436,13 +474,14 @@ async def test_connection_adhoc(payload: CameraTestRequest):
 async def test_camera_connection(
     camera_id: str,
     payload: CameraTestExistingRequest | None = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Test connection to an existing camera by ID using stored encrypted credentials,
     with optional overrides if user modified URL/credentials in Edit modal.
     """
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(
@@ -484,14 +523,18 @@ async def test_camera_connection(
     )
 
 @router.post("/{camera_id}/stream/start", response_model=StreamStartResponse)
-async def start_stream(camera_id: str, db: AsyncSession = Depends(get_db)):
+async def start_stream(
+    camera_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
     Start on-demand live stream. Tracks session in stream_sessions.
     Returns WebRTC WHEP endpoint.
     MediaMTX handles source pulling and viewer fan-out.
     No local CPU video decoding.
     """
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(
@@ -555,6 +598,7 @@ async def start_stream(camera_id: str, db: AsyncSession = Depends(get_db)):
 async def stop_stream(
     camera_id: str,
     payload: StreamStopRequest | None = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -562,7 +606,7 @@ async def stop_stream(
     Updates stream_sessions and decrements viewer count.
     MediaMTX on-demand source automatically closes after timeout if no readers remain.
     """
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(
@@ -590,11 +634,15 @@ async def stop_stream(
     }
 
 @router.get("/{camera_id}/stream")
-async def get_camera_stream_info(camera_id: str, db: AsyncSession = Depends(get_db)):
+async def get_camera_stream_info(
+    camera_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
     Return currently available browser stream endpoint without exposing credentials.
     """
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(
@@ -627,11 +675,15 @@ async def get_camera_stream_info(camera_id: str, db: AsyncSession = Depends(get_
     }
 
 @router.get("/{camera_id}/status")
-async def get_camera_status(camera_id: str, db: AsyncSession = Depends(get_db)):
+async def get_camera_status(
+    camera_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
     Get live status for a specific camera.
     """
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(
@@ -655,12 +707,16 @@ async def get_camera_status(camera_id: str, db: AsyncSession = Depends(get_db)):
     }
 
 @router.get("/{camera_id}/ai")
-async def get_camera_ai(camera_id: str, db: AsyncSession = Depends(get_db)):
+async def get_camera_ai(
+    camera_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
     Get live AI detection state, people count, phone alerts, and max 5 anomalies for a camera.
     Prioritizes sampling for actively viewed camera.
     """
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(
@@ -678,12 +734,16 @@ async def get_camera_ai(camera_id: str, db: AsyncSession = Depends(get_db)):
     return state
 
 @router.post("/{camera_id}/ai/analyze")
-async def trigger_camera_ai_analysis(camera_id: str, db: AsyncSession = Depends(get_db)):
+async def trigger_camera_ai_analysis(
+    camera_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
     Trigger on-demand instant AI analysis (YOLOv8 + PPE) on a single snapshot frame.
     Rejected if camera is OFFLINE.
     """
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(
@@ -707,6 +767,7 @@ class FrameDetectRequest(BaseModel):
 async def detect_camera_frame(
     camera_id: str,
     payload: FrameDetectRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -715,7 +776,7 @@ async def detect_camera_frame(
     Zero RTSP handshake lag, pixel-perfect alignment, real-time feedback.
     Rejected if camera is OFFLINE.
     """
-    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    result = await db.execute(select(Camera).where(Camera.id == camera_id, Camera.user_id == current_user.id))
     camera = result.scalar_one_or_none()
     if not camera:
         raise HTTPException(

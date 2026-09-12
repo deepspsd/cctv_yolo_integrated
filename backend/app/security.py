@@ -38,6 +38,35 @@ def decrypt_credential(encrypted_text: str | None) -> str | None:
     except Exception as e:
         raise RuntimeError(f"Decryption failed: {str(e)}")
 
+def encrypt_bytes(data: bytes | None) -> bytes | None:
+    """
+    Encrypt raw binary bytes (e.g. JPEG image) using AES-256-GCM.
+    Returns: 12-byte nonce prepended to ciphertext.
+    """
+    if not data:
+        return None
+    try:
+        aesgcm = AESGCM(_get_aes_key())
+        nonce = os.urandom(12)
+        ciphertext = aesgcm.encrypt(nonce, data, None)
+        return nonce + ciphertext
+    except Exception as e:
+        raise RuntimeError(f"Binary encryption failed: {str(e)}")
+
+def decrypt_bytes(encrypted_data: bytes | None) -> bytes | None:
+    """
+    Decrypt binary bytes encrypted with encrypt_bytes (AES-256-GCM).
+    """
+    if not encrypted_data:
+        return None
+    try:
+        nonce = encrypted_data[:12]
+        ciphertext = encrypted_data[12:]
+        aesgcm = AESGCM(_get_aes_key())
+        return aesgcm.decrypt(nonce, ciphertext, None)
+    except Exception as e:
+        raise RuntimeError(f"Binary decryption failed: {str(e)}")
+
 def mask_rtsp_url(url: str | None) -> str:
     """
     Mask credentials in RTSP URLs so passwords are never exposed.

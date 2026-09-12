@@ -46,6 +46,10 @@ class PersonTrack:
         self.confidence = confidence
         self.missed_frames = 0
         self.hits = 1
+        self.employee_id: Optional[str] = None
+        self.employee_name: Optional[str] = None
+        self.identity_confidence: float = 0.0
+        self.identity_state: str = "UNKNOWN"
         self.associated_ppe: Dict[str, Any] = {}
 
     def update(self, box: List[float], confidence: float):
@@ -186,6 +190,8 @@ class ScopedMultiCameraTracker:
                     "confidence": ppe["confidence"],
                     "ppe_box": ppe_box,
                     "person_box": best_person.box,
+                    "employee_id": best_person.employee_id,
+                    "employee_name": best_person.employee_name,
                     "association_score": round(best_score, 2)
                 })
 
@@ -212,6 +218,8 @@ class ScopedMultiCameraTracker:
                             "confidence": round(mach["confidence"] * trk.confidence, 2),
                             "ppe_box": m_box,
                             "person_box": trk.box,
+                            "employee_id": trk.employee_id,
+                            "employee_name": trk.employee_name,
                             "association_score": round(1.0 - min(1.0, dist), 2)
                         })
 

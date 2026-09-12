@@ -7,6 +7,8 @@ import { Navbar } from './components/Navbar';
 import { LoginPage } from './components/LoginPage';
 import { RegisterPage } from './components/RegisterPage';
 import { AlertsPage } from './components/AlertsPage';
+import { AttendancePage } from './components/AttendancePage';
+import { EmployeesPage } from './components/EmployeesPage';
 import { CameraSummaryCards } from './components/CameraSummaryCards';
 import { CameraControls } from './components/CameraControls';
 import { CameraTable } from './components/CameraTable';
@@ -40,11 +42,37 @@ import {
   Command,
 } from 'lucide-react';
 
+function getViewFromPath(pathname: string, isLoggedIn: boolean): AppView {
+  const clean = pathname.toLowerCase().replace(/^\/+|\/+$/g, '');
+  if (!isLoggedIn) {
+    return clean === 'register' ? 'register' : 'login';
+  }
+  if (clean === 'alerts' || clean === 'evidence') return 'alerts';
+  if (clean === 'attendance') return 'attendance';
+  if (clean === 'employees' || clean === 'staff') return 'employees';
+  if (clean === 'login') return 'login';
+  if (clean === 'register') return 'register';
+  return 'cameras';
+}
+
+function getPathFromView(view: AppView): string {
+  switch (view) {
+    case 'alerts': return '/alerts';
+    case 'attendance': return '/attendance';
+    case 'employees': return '/employees';
+    case 'login': return '/login';
+    case 'register': return '/register';
+    case 'cameras':
+    default:
+      return '/';
+  }
+}
+
 export default function App() {
-  // Navigation & Auth States — start at login if no token stored
+  // Navigation & Auth States — synchronized with browser URL
   const [currentUser, setCurrentUser] = useState<User | null>(() => authService.getCurrentUser());
   const [currentView, setCurrentView] = useState<AppView>(() =>
-    authService.isLoggedIn() ? 'cameras' : 'login'
+    getViewFromPath(window.location.pathname, authService.isLoggedIn())
   );
 
   // Dark Mode Theme State (Matt Black + Cyber Orange Accents)
@@ -71,6 +99,24 @@ export default function App() {
       document.documentElement.classList.remove('dark');
     }
   }, [isDark]);
+
+  // Browser history & URL synchronization
+  useEffect(() => {
+    const handlePopState = () => {
+      const view = getViewFromPath(window.location.pathname, authService.isLoggedIn());
+      setCurrentView(view);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Sync browser URL bar when active view changes
+  useEffect(() => {
+    const targetPath = getPathFromView(currentView);
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({ view: currentView }, '', targetPath);
+    }
+  }, [currentView]);
 
   // Main Data States
   const [cameras, setCameras] = useState<Camera[]>([]);
@@ -191,7 +237,9 @@ export default function App() {
           return current;
         });
       } else if (event.type === 'CAMERA_CREATED') {
-        setCameras((prev) => [event.payload, ...prev]);
+        if (!event.payload?.userId || (currentUser && event.payload.userId === currentUser.id)) {
+          setCameras((prev) => [event.payload, ...prev]);
+        }
       } else if (event.type === 'CAMERA_UPDATED') {
         setCameras((prev) =>
           prev.map((cam) => (cam.id === event.payload.id ? event.payload : cam))
@@ -219,6 +267,10 @@ export default function App() {
           }
           return current;
         });
+      } else if (event.type === 'ATTENDANCE_UPDATE') {
+        const att = event.payload;
+        soundService.playTactileBlip(920, 0.02);
+        addToast(`✅ Attendance Clocked: ${att.employeeName || 'Staff'} (${att.status || 'PRESENT'})`, 'info');
       } else if (event.type === 'CAMERA_ANOMALY_ALERT') {
         const raw = event.payload;
         const newAlert: AnomalyAlertEvent = {
@@ -526,7 +578,7 @@ export default function App() {
 
   const handleNavigate = (section: AppView | string) => {
     if (section === 'login' || section === 'register') {
-      setCurrentView(section);
+      setCurrentView(section as AppView);
     } else if (section === 'cameras') {
       setCurrentView('cameras');
       handleResetFilters();
@@ -535,6 +587,14 @@ export default function App() {
       setIsViewerOpen(false);
       setSelectedCamera(null);
       loadAlerts();
+    } else if (section === 'attendance') {
+      setCurrentView('attendance');
+      setIsViewerOpen(false);
+      setSelectedCamera(null);
+    } else if (section === 'employees') {
+      setCurrentView('employees');
+      setIsViewerOpen(false);
+      setSelectedCamera(null);
     } else {
       setCurrentView('cameras');
       addToast(`Switched context to ${section.toUpperCase()}`, 'info');
@@ -589,6 +649,10 @@ export default function App() {
             onNavigateToLogin={() => setCurrentView('login')}
             onBackToConsole={() => setCurrentView('cameras')}
           />
+        ) : currentView === 'attendance' ? (
+          <AttendancePage cameras={cameras} />
+        ) : currentView === 'employees' ? (
+          <EmployeesPage />
         ) : currentView === 'alerts' ? (
           <AlertsPage
             alerts={alerts}
@@ -598,6 +662,10 @@ export default function App() {
               setAlerts((prev) =>
                 prev.map((a) => (a.id === id ? { ...a, status: newStatus } : a))
               );
+            }}
+            onDeleteAlert={(id) => {
+              setAlerts((prev) => prev.filter((a) => a.id !== id));
+              addToast('Incident record and evidence snapshot permanently erased', 'success');
             }}
           />
         ) : (

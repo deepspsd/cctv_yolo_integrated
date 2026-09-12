@@ -70,6 +70,17 @@ export const anomalyService = {
     return res.json();
   },
 
+  async deleteAnomaly(id: string): Promise<{ success: boolean; id: string; message: string }> {
+    const res = await apiFetch(`/anomalies/${id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `Failed to delete incident: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
   async getAiStatus(): Promise<any> {
     const res = await apiFetch('/ai/status');
     if (!res.ok) {
@@ -101,13 +112,14 @@ export const anomalyService = {
    * Direct snapshot path resolver pointing to static file mount or streaming endpoint.
    */
   getSnapshotUrl(snapshotPath: string | null | undefined, anomalyId?: string): string {
+    // Primary: stream decrypted AES-256 evidence image from database via authenticated endpoint
+    if (anomalyId) {
+      return this.getEvidenceUrl(anomalyId);
+    }
     if (snapshotPath) {
       const clean = snapshotPath.replace(/\\/g, '/').replace(/^\.?\//, '');
       if (clean.startsWith('http')) return clean;
       return `http://localhost:5000/${clean}`;
-    }
-    if (anomalyId) {
-      return this.getEvidenceUrl(anomalyId);
     }
     return '';
   }

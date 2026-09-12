@@ -173,13 +173,16 @@ class AiInferenceEngine:
             "lastAnalyzed": None
         }
 
-    def get_all_recent_anomalies(self, limit: int = 20) -> List[dict]:
+    def get_all_recent_anomalies(self, limit: int = 20, allowed_camera_ids: Optional[set] = None) -> List[dict]:
         """
-        Retrieve recent anomalies across all cameras from memory cache.
+        Retrieve recent anomalies across cameras from memory cache.
+        Optionally filter by allowed_camera_ids.
         """
         all_anoms = []
         with self.scheduler._lock:
             for slot in self.scheduler.slots.values():
+                if allowed_camera_ids is not None and slot.camera_id not in allowed_camera_ids:
+                    continue
                 anoms = slot.latest_state.get("anomalies", [])
                 all_anoms.extend(anoms)
         all_anoms.sort(key=lambda x: x.get("timestamp", ""), reverse=True)

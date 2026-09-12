@@ -14,6 +14,7 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   ZoomIn,
   ZoomOut,
   Maximize2,
@@ -31,9 +32,11 @@ import {
   Sparkles,
   FolderOpen,
   Grid,
+  Trash2,
 } from 'lucide-react';
 import { AnomalyAlertEvent, Camera } from '../types';
 import { anomalyService } from '../services/anomalyService';
+import { soundService } from '../services/soundService';
 
 interface AlertsPageProps {
   alerts: AnomalyAlertEvent[];
@@ -41,6 +44,7 @@ interface AlertsPageProps {
   onRefresh?: () => void;
   isLoading?: boolean;
   onStatusUpdate?: (id: string, newStatus: string) => void;
+  onDeleteAlert?: (id: string) => void;
 }
 
 // ─── Formatters & Style Helpers ─────────────────────────────────────────────
@@ -135,12 +139,49 @@ const getStatusBadge = (status: string) => {
 
 const parseDateKey = (iso?: string | null): string => {
   if (!iso) return '';
+  const match = String(iso).match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
+  if (match) {
+    return `${match[1]}-${match[2]}-${match[3]}`;
+  }
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  if (Number.isNaN(d.getTime())) return String(iso).slice(0, 10);
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+const getAlertDateKeys = (iso?: string | null): string[] => {
+  if (!iso) return [];
+  const keys = new Set<string>();
+  const match = String(iso).match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
+  if (match) {
+    keys.add(`${match[1]}-${match[2]}-${match[3]}`);
+  }
+  const d = new Date(iso);
+  if (!Number.isNaN(d.getTime())) {
+    const localY = d.getFullYear();
+    const localM = String(d.getMonth() + 1).padStart(2, '0');
+    const localD = String(d.getDate()).padStart(2, '0');
+    keys.add(`${localY}-${localM}-${localD}`);
+
+    const utcY = d.getUTCFullYear();
+    const utcM = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const utcD = String(d.getUTCDate()).padStart(2, '0');
+    keys.add(`${utcY}-${utcM}-${utcD}`);
+  }
+  return Array.from(keys);
+};
+
+const getSeverityRank = (alert: AnomalyAlertEvent): number => {
+  const sev = getSeverity(alert);
+  switch (sev) {
+    case 'CRITICAL': return 4;
+    case 'HIGH': return 3;
+    case 'MEDIUM': return 2;
+    case 'LOW': return 1;
+    default: return 0;
+  }
 };
 
 const formatRegisteredDate = (iso?: string | null): string => {
@@ -275,6 +316,7 @@ interface EvidenceViewerModalProps {
   alertsList: AnomalyAlertEvent[];
   onClose: () => void;
   onStatusChange: (id: string, newStatus: string) => Promise<void>;
+  onDelete?: (id: string) => Promise<void>;
 }
 
 const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
@@ -282,11 +324,13 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
   alertsList,
   onClose,
   onStatusChange,
+  onDelete,
 }) => {
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [imgError, setImgError] = useState<boolean>(false);
   const [imgLoading, setImgLoading] = useState<boolean>(true);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState<boolean>(false);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
   const [useFallbackUrl, setUseFallbackUrl] = useState<boolean>(false);
   const [retryKey, setRetryKey] = useState<number>(0);
 
@@ -359,6 +403,22 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
       console.error('Failed to change status:', err);
     } finally {
       setIsUpdatingStatus(false);
+    }
+  };
+
+  const handleDeleteClick = async () => {
+    if (!onDelete || !currentAlert?.id) return;
+    if (!window.confirm('Permanently delete this incident and erase its stored evidence photo from disk?')) {
+      return;
+    }
+    setIsDeleting(true);
+    try {
+      await onDelete(currentAlert.id);
+      onClose();
+    } catch (err) {
+      console.error('Failed to delete incident:', err);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -651,7 +711,7 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
                 <button
                   disabled={isUpdatingStatus || currentAlert.status === 'REVIEWED'}
                   onClick={() => handleStatusClick('REVIEWED')}
-                  className="flex items-center justify-center gap-1.5 rounded-xl border border-[#06b6d4]/40 bg-[#06b6d4]/10 px-3 py-2 text-xs font-semibold text-[#06b6d4] transition hover:bg-[#06b6d4]/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-[#06b6d4]/40 bg-[#06b6d4]/10 px-3 py-2 text-xs font-semibold text-[#06b6d4] transition hover:bg-[#06b6d4]/20 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                 >
                   <Check className="h-3.5 w-3.5" />
                   Mark Reviewed
@@ -660,16 +720,28 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
                 <button
                   disabled={isUpdatingStatus || currentAlert.status === 'RESOLVED'}
                   onClick={() => handleStatusClick('RESOLVED')}
-                  className="flex items-center justify-center gap-1.5 rounded-xl border border-[#17c964]/40 bg-[#17c964]/10 px-3 py-2 text-xs font-semibold text-[#17c964] transition hover:bg-[#17c964]/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-[#17c964]/40 bg-[#17c964]/10 px-3 py-2 text-xs font-semibold text-[#17c964] transition hover:bg-[#17c964]/20 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                 >
                   <CheckCircle2 className="h-3.5 w-3.5" />
                   Resolve
                 </button>
               </div>
 
+              {onDelete && (
+                <button
+                  disabled={isDeleting}
+                  onClick={handleDeleteClick}
+                  className="w-full flex items-center justify-center gap-1.5 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400 py-2 text-xs font-semibold transition cursor-pointer disabled:opacity-40"
+                  title="Delete incident and permanently remove photo from database and storage"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>{isDeleting ? 'Deleting Evidence...' : 'Delete Incident & Erase Photo'}</span>
+                </button>
+              )}
+
               <button
                 onClick={onClose}
-                className="w-full rounded-xl border border-white/10 bg-white/5 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
+                className="w-full rounded-xl border border-white/10 bg-white/5 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white cursor-pointer"
               >
                 Close Inspector
               </button>
@@ -687,6 +759,7 @@ interface IncidentEvidenceCardProps {
   alert: AnomalyAlertEvent;
   onInspect: () => void;
   onQuickResolve?: (e: React.MouseEvent) => void;
+  onDelete?: (e: React.MouseEvent) => void;
   isResolving?: boolean;
 }
 
@@ -694,6 +767,7 @@ const IncidentEvidenceCard: React.FC<IncidentEvidenceCardProps> = ({
   alert,
   onInspect,
   onQuickResolve,
+  onDelete,
   isResolving = false,
 }) => {
   const severity = getSeverity(alert);
@@ -710,140 +784,151 @@ const IncidentEvidenceCard: React.FC<IncidentEvidenceCardProps> = ({
   return (
     <div
       onClick={onInspect}
-      className={`group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-white dark:bg-[#0d121f] p-3.5 shadow-sm transition-all duration-200 hover:-translate-y-1 hover:border-[#f97316]/50 hover:shadow-lg dark:hover:shadow-[0_8px_24px_rgba(0,0,0,0.6)] cursor-pointer ${
+      className={`group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-white dark:bg-[#111116] border-black/[0.08] dark:border-white/[0.08] hover:border-orange-500/50 dark:hover:border-orange-500/50 shadow-xs hover:shadow-xl dark:hover:shadow-[0_8px_30px_rgba(0,0,0,0.8)] transition-all duration-200 cursor-pointer ${
         isRecent
           ? 'border-red-500/40 shadow-[0_0_12px_rgba(239,68,68,0.15)] ring-1 ring-red-500/20'
-          : 'border-black/[0.08] dark:border-white/[0.08]'
+          : ''
       }`}
     >
       <div>
-        {/* Card Header: Anomaly Name + Severity Pill */}
-        <div className="flex items-center justify-between gap-1.5 mb-2.5">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <SevIcon className={`h-3.5 w-3.5 shrink-0 ${sevTheme.text}`} />
-            <span className="truncate text-xs font-bold text-slate-900 dark:text-white tracking-tight">
-              {formatAnomalyLabel(alert.anomalyType)}
+        {/* Visual Viewport Frame matching Camera cards */}
+        <div className="relative aspect-video w-full overflow-hidden bg-black flex flex-col justify-between p-2.5 select-none">
+          {/* Subtle CCTV scanline backdrop */}
+          <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.4)_50%)] bg-[length:100%_4px] pointer-events-none z-10 opacity-60" />
+
+          {/* Top Badges */}
+          <div className="relative z-20 flex items-center justify-between gap-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-black/85 text-white backdrop-blur-md border border-white/20 shadow-xs">
+                {alert.cameraId}
+              </span>
+              {alert.trackId !== undefined && alert.trackId !== null && (
+                <span className="px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 backdrop-blur-md">
+                  #{alert.trackId}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {isRecent && (
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-red-600/90 text-white backdrop-blur-md flex items-center gap-1 shadow-xs animate-pulse">
+                  JUST NOW
+                </span>
+              )}
+              <span
+                className={`px-2 py-0.5 rounded-full text-[9.5px] font-mono font-bold uppercase tracking-tight backdrop-blur-md flex items-center gap-1 shadow-xs ${sevTheme.badge}`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${sevTheme.dot}`} />
+                {severity}
+              </span>
+            </div>
+          </div>
+
+          {/* Evidence Photo / Visual representation */}
+          <div className="absolute inset-0 z-0">
+            <EvidenceThumbnail
+              alert={alert}
+              onClick={onInspect}
+              className="h-full w-full object-cover"
+            />
+          </div>
+
+          {/* Quick Action Overlay on Hover */}
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-30 flex flex-col items-center justify-center gap-2 pointer-events-auto">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                soundService.playTactileBlip(800, 0.03);
+                onInspect();
+              }}
+              className="px-3.5 py-1.5 rounded-full bg-orange-500 hover:bg-orange-600 text-black font-semibold text-[11.5px] flex items-center gap-1.5 shadow-lg transform hover:scale-105 transition-all cursor-pointer"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>Inspect Proof</span>
+            </button>
+            <span className="text-[10px] font-mono text-zinc-300 drop-shadow">
+              Click to open high-res evidence viewer
             </span>
           </div>
 
-          <div className="flex items-center gap-1 shrink-0">
-            {isRecent && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-red-500/20 border border-red-500/40 px-1.5 py-0.5 text-[8px] font-mono font-bold text-red-400 uppercase tracking-wider animate-pulse">
-                <span className="h-1 w-1 rounded-full bg-red-400" />
-                JUST NOW
-              </span>
-            )}
-            <span
-              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-mono font-bold uppercase tracking-wider ${sevTheme.badge}`}
-            >
-              <span className={`h-1 w-1 rounded-full ${sevTheme.dot}`} />
-              {severity}
+          {/* Bottom Bar Info on video viewport */}
+          <div className="relative z-20 flex items-center justify-between text-[10.5px] font-mono text-zinc-300 pt-1">
+            <span className="truncate text-[10px] tracking-tight">{alert.zone || 'General Facility'}</span>
+            <span className="text-[10px] tracking-tight text-orange-400 font-bold">
+              {formatRegisteredTime(alert.confirmedAt || alert.createdAt)}
             </span>
           </div>
         </div>
 
-        {/* Evidence Photo Frame */}
-        <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black/90 border border-black/10 dark:border-white/10">
-          <EvidenceThumbnail
-            alert={alert}
-            onClick={onInspect}
-            className="h-full w-full"
-          />
+        {/* Card Body Info */}
+        <div className="p-3">
+          <div className="flex items-start justify-between gap-1.5">
+            <div className="min-w-0">
+              <h4 className="font-semibold text-[13px] text-[#0a0a0a] dark:text-white tracking-tight truncate flex items-center gap-1.5">
+                <SevIcon className={`w-3.5 h-3.5 shrink-0 ${sevTheme.text}`} />
+                <span>{formatAnomalyLabel(alert.anomalyType)}</span>
+              </h4>
+              <p className="text-[11px] font-mono text-[#8c8c8c] dark:text-[#71717a] truncate mt-0.5">
+                {alert.cameraName || alert.cameraId} • {Math.round((alert.confidence || 0) * 100)}% Conf
+              </p>
+            </div>
 
-          {/* Overlay Status Badge */}
-          <div className="absolute top-2 left-2 z-10 pointer-events-none">
             <span
-              className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-mono font-semibold uppercase backdrop-blur-md shadow-sm ${statusBadge.style}`}
+              className={`px-2 py-0.5 rounded-full text-[9.5px] font-mono font-bold uppercase shrink-0 border ${statusBadge.style}`}
             >
-              <span className={`h-1.5 w-1.5 rounded-full ${statusBadge.dot}`} />
               {statusBadge.label}
             </span>
-          </div>
-
-          {/* Overlay Track ID */}
-          {alert.trackId !== undefined && alert.trackId !== null && (
-            <div className="absolute top-2 right-2 z-10 pointer-events-none rounded-md bg-black/75 px-1.5 py-0.5 text-[9px] font-mono text-slate-300 border border-white/10 backdrop-blur-md">
-              #{alert.trackId}
-            </div>
-          )}
-
-          {/* Scanline Effect Line on Card Hover */}
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-white/[0.03] to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
-        </div>
-
-        {/* Telemetry Row */}
-        <div className="mt-3 space-y-2 text-[11px]">
-          {/* Row 1: Time & Date */}
-          <div className="flex items-center justify-between text-slate-600 dark:text-slate-400">
-            <span className="flex items-center gap-1.5">
-              <Clock className="h-3.5 w-3.5 text-[#f97316]" />
-              <span className="font-mono font-bold text-slate-900 dark:text-slate-100 text-xs">
-                {formatRegisteredTime(alert.confirmedAt || alert.createdAt)}
-              </span>
-            </span>
-
-            <span className="flex items-center gap-1 font-mono text-[10px] text-slate-500 dark:text-slate-400">
-              <Calendar className="h-3 w-3 text-slate-400" />
-              {formatRegisteredDate(alert.confirmedAt || alert.createdAt)}
-            </span>
-          </div>
-
-          {/* Row 2: Camera Name & AI Confidence */}
-          <div className="flex items-center justify-between text-[11px] border-t border-black/[0.04] dark:border-white/[0.05] pt-1.5 text-slate-500">
-            <div className="flex items-center gap-1 min-w-0">
-              <CameraIcon className="h-3 w-3 text-slate-400 shrink-0" />
-              <span className="truncate font-semibold text-slate-800 dark:text-slate-200">
-                {alert.cameraName || alert.cameraId}
-              </span>
-            </div>
-            <span className="shrink-0 font-mono text-emerald-500 dark:text-emerald-400 font-bold text-[10px]">
-              {Math.round((alert.confidence || 0) * 100)}% Conf
-            </span>
-          </div>
-
-          {/* Row 3: Facility Zone & Snapshot Presence */}
-          <div className="flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500 pt-0.5">
-            <span className="flex items-center gap-1 truncate">
-              <Layers className="h-3 w-3 text-[#f97316]/70 shrink-0" />
-              <span className="truncate">{alert.zone || 'General Facility'}</span>
-            </span>
-            {alert.snapshotPath ? (
-              <span className="inline-flex items-center gap-0.5 text-[9px] font-mono text-emerald-500 dark:text-emerald-400 font-semibold">
-                <Check className="h-2.5 w-2.5" /> Photo OK
-              </span>
-            ) : (
-              <span className="text-[9px] font-mono text-slate-400">Log Event</span>
-            )}
           </div>
         </div>
       </div>
 
-      {/* Card Action Buttons */}
-      <div className="mt-3 pt-2.5 border-t border-black/[0.06] dark:border-white/[0.06] flex items-center gap-1.5">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onInspect();
-          }}
-          className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.05] py-1.5 text-[11px] font-semibold text-slate-800 dark:text-slate-200 transition hover:bg-[#f97316] hover:text-white hover:border-[#f97316]"
-        >
-          <Eye className="h-3.5 w-3.5" />
-          <span>Inspect Proof</span>
-        </button>
+      {/* Card Body Footer with Actions */}
+      <div className="px-3 py-2.5 flex items-center justify-between gap-2 border-t border-black/[0.04] dark:border-white/[0.06] bg-black/[0.01] dark:bg-white/[0.01]">
+        <span className="text-[10px] font-mono text-[#8c8c8c] dark:text-[#71717a]">
+          {formatRegisteredDate(alert.confirmedAt || alert.createdAt)}
+        </span>
 
-        {(alert.status || 'NEW').toUpperCase() !== 'RESOLVED' && onQuickResolve && (
+        <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+          {(alert.status || 'NEW').toUpperCase() !== 'RESOLVED' && onQuickResolve && (
+            <button
+              disabled={isResolving}
+              onClick={(e) => {
+                soundService.playTactileBlip(880, 0.02);
+                onQuickResolve(e);
+              }}
+              title="Mark Resolved"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 transition cursor-pointer disabled:opacity-50"
+            >
+              <Check className="w-3 h-3" />
+              <span>Resolve</span>
+            </button>
+          )}
           <button
-            disabled={isResolving}
-            onClick={(e) => {
-              e.stopPropagation();
-              onQuickResolve(e);
+            onClick={() => {
+              soundService.playTactileBlip(750, 0.02);
+              onInspect();
             }}
-            title="Mark Resolved"
-            className="flex items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+            className="p-1.5 text-[#6b6b6b] dark:text-[#a1a1aa] hover:text-black dark:hover:text-white hover:bg-black/[0.05] dark:hover:bg-white/[0.06] rounded-md transition-colors cursor-pointer"
+            title="Inspect Incident Proof"
           >
-            <Check className="h-3.5 w-3.5" />
+            <Eye className="w-3.5 h-3.5" />
           </button>
-        )}
+
+          {onDelete && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                soundService.playTactileBlip(500, 0.03);
+                onDelete(e);
+              }}
+              className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-500/10 rounded-md transition-colors cursor-pointer"
+              title="Delete Incident & Erase Evidence Photo"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -857,10 +942,14 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
   onRefresh,
   isLoading = false,
   onStatusUpdate,
+  onDeleteAlert,
 }) => {
   // Available evidence dates fetched from backend/data/evidence
   const [evidenceDates, setEvidenceDates] = useState<{ date: string; totalAlerts: number; evidencePhotos: number }[]>([]);
   const [loadingDates, setLoadingDates] = useState(false);
+
+  // Locally deleted incident IDs for instant reactive feedback
+  const [deletedAlertIds, setDeletedAlertIds] = useState<Set<string>>(new Set());
 
   // Filters State
   const [searchQuery, setSearchQuery] = useState('');
@@ -871,9 +960,9 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
   const [selectedStatus, setSelectedStatus] = useState('ALL');
   const [selectedDate, setSelectedDate] = useState<string>(''); // YYYY-MM-DD
   const [datePreset, setDatePreset] = useState<'ALL' | 'TODAY' | 'YESTERDAY' | 'CUSTOM'>('ALL');
-  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc' | 'severity' | 'confidence'>('desc');
   const [viewMode, setViewMode] = useState<'byCamera' | 'grid' | 'table'>('byCamera');
-  const [evidenceOnly, setEvidenceOnly] = useState<boolean>(true);
+  const [evidenceOnly, setEvidenceOnly] = useState<boolean>(false); // default show all alerts
 
   // Evidence Inspector Modal State
   const [inspectAlert, setInspectAlert] = useState<AnomalyAlertEvent | null>(null);
@@ -881,6 +970,34 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
   // Local alert status override cache & loading tracker
   const [localStatuses, setLocalStatuses] = useState<Record<string, string>>({});
   const [resolvingId, setResolvingId] = useState<string | null>(null);
+
+  // Historical alerts fetched specifically for selectedDate
+  const [historicalAlerts, setHistoricalAlerts] = useState<AnomalyAlertEvent[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Fetch full records for selectedDate from backend if specified
+  useEffect(() => {
+    if (!selectedDate) {
+      setHistoricalAlerts([]);
+      return;
+    }
+    let isCancelled = false;
+    const loadDateAlerts = async () => {
+      setLoadingHistory(true);
+      try {
+        const res = await anomalyService.getAnomalies({ date: selectedDate, limit: 1000 });
+        if (!isCancelled) {
+          setHistoricalAlerts(res);
+        }
+      } catch (err) {
+        console.error('Failed to load date anomalies from backend:', err);
+      } finally {
+        if (!isCancelled) setLoadingHistory(false);
+      }
+    };
+    loadDateAlerts();
+    return () => { isCancelled = true; };
+  }, [selectedDate]);
 
   // Fetch evidence dates from backend/data/evidence
   const fetchEvidenceDates = useCallback(async () => {
@@ -905,24 +1022,32 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     return () => clearInterval(interval);
   }, [fetchEvidenceDates, onRefresh]);
 
-  // Merged alerts with normalization & local statuses
+  // Merged alerts with normalization, historical date fetch & local statuses
   const mergedAlerts = useMemo(() => {
-    return alerts.map((raw: any) => {
-      const a: AnomalyAlertEvent = {
-        ...raw,
-        cameraId: raw.cameraId || raw.camera_id || '',
-        cameraName: raw.cameraName || raw.camera_name || raw.cameraId || raw.camera_id || '',
-        eventCategory: raw.eventCategory || raw.event_category || 'VIOLATION',
-        anomalyType: raw.anomalyType || raw.anomaly_type || 'ANOMALY',
-        trackId: raw.trackId ?? raw.track_id,
-        confirmedAt: raw.confirmedAt || raw.confirmed_at || raw.createdAt || raw.created_at || raw.timestamp,
-        createdAt: raw.createdAt || raw.created_at || raw.confirmedAt || raw.confirmed_at || raw.timestamp,
-        snapshotPath: raw.snapshotPath || raw.snapshot_path || null,
-        status: localStatuses[raw.id] || raw.status || 'NEW',
-      };
-      return a;
+    const rawList = [...historicalAlerts, ...alerts];
+    const uniqueMap = new Map<string, any>();
+    rawList.forEach((raw) => {
+      if (raw && raw.id) uniqueMap.set(raw.id, raw);
     });
-  }, [alerts, localStatuses]);
+
+    return Array.from(uniqueMap.values())
+      .filter((raw: any) => !deletedAlertIds.has(raw?.id))
+      .map((raw: any) => {
+        const a: AnomalyAlertEvent = {
+          ...raw,
+          cameraId: raw.cameraId || raw.camera_id || '',
+          cameraName: raw.cameraName || raw.camera_name || raw.cameraId || raw.camera_id || '',
+          eventCategory: raw.eventCategory || raw.event_category || 'VIOLATION',
+          anomalyType: raw.anomalyType || raw.anomaly_type || 'ANOMALY',
+          trackId: raw.trackId ?? raw.track_id,
+          confirmedAt: raw.confirmedAt || raw.confirmed_at || raw.createdAt || raw.created_at || raw.timestamp,
+          createdAt: raw.createdAt || raw.created_at || raw.confirmedAt || raw.confirmed_at || raw.timestamp,
+          snapshotPath: raw.snapshotPath || raw.snapshot_path || null,
+          status: localStatuses[raw.id] || raw.status || 'NEW',
+        };
+        return a;
+      });
+  }, [alerts, historicalAlerts, localStatuses, deletedAlertIds]);
 
   // Derived available dates combining backend discovery + in-memory alerts
   const availableDateOptions = useMemo(() => {
@@ -982,6 +1107,104 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
       setSelectedDate('');
     }
   };
+
+  // ─── Interactive Calendar Popover State & Helpers ───────────────────────────
+  const [isCalendarOpen, setIsCalendarOpen] = useState<boolean>(false);
+  const calendarRef = useRef<HTMLDivElement>(null);
+  const [calendarViewDate, setCalendarViewDate] = useState<Date>(() => new Date());
+
+  // Date -> Stats map for fast day badge & dot indicators
+  const dateStatsMap = useMemo(() => {
+    const map = new Map<string, { totalAlerts: number; evidencePhotos: number }>();
+    availableDateOptions.forEach((opt) => {
+      map.set(opt.date, { totalAlerts: opt.totalAlerts, evidencePhotos: opt.evidencePhotos });
+    });
+    return map;
+  }, [availableDateOptions]);
+
+  const selectedDateStats = useMemo(() => {
+    if (!selectedDate) return null;
+    return dateStatsMap.get(selectedDate) || null;
+  }, [selectedDate, dateStatsMap]);
+
+  // Sync calendar view month when selectedDate changes
+  useEffect(() => {
+    if (selectedDate) {
+      const parts = selectedDate.split('-');
+      if (parts.length === 3) {
+        const y = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        setCalendarViewDate(new Date(y, m, 1));
+      }
+    }
+  }, [selectedDate]);
+
+  // Click outside to close calendar popover
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (calendarRef.current && !calendarRef.current.contains(event.target as Node)) {
+        setIsCalendarOpen(false);
+      }
+    };
+    if (isCalendarOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isCalendarOpen]);
+
+  // Escape key to dismiss calendar popover
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isCalendarOpen) {
+        setIsCalendarOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isCalendarOpen]);
+
+  // Generate 35-42 calendar day cells for current view month
+  const calendarGrid = useMemo(() => {
+    const year = calendarViewDate.getFullYear();
+    const month = calendarViewDate.getMonth();
+
+    const firstDayOfWeek = new Date(year, month, 1).getDay(); // 0 = Sun
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const prevMonthDays = new Date(year, month, 0).getDate();
+
+    const cells: Array<{ day: number; isCurrentMonth: boolean; dateKey: string }> = [];
+
+    // Leading days from previous month
+    for (let i = firstDayOfWeek - 1; i >= 0; i--) {
+      const d = prevMonthDays - i;
+      const prevDate = new Date(year, month - 1, d);
+      const key = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      cells.push({ day: d, isCurrentMonth: false, dateKey: key });
+    }
+
+    // Days in current month
+    for (let d = 1; d <= daysInMonth; d++) {
+      const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      cells.push({ day: d, isCurrentMonth: true, dateKey: key });
+    }
+
+    // Trailing days to round to complete weeks (35 or 42)
+    const targetLength = cells.length > 35 ? 42 : 35;
+    const remaining = targetLength - cells.length;
+    for (let d = 1; d <= remaining; d++) {
+      const nextDate = new Date(year, month + 1, d);
+      const key = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      cells.push({ day: d, isCurrentMonth: false, dateKey: key });
+    }
+
+    return cells;
+  }, [calendarViewDate]);
+
+  const viewMonthLabel = useMemo(() => {
+    return calendarViewDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  }, [calendarViewDate]);
 
   // Unique camera list for camera dropdown
   const cameraOptions = useMemo(() => {
@@ -1056,10 +1279,10 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
           }
         }
 
-        // Date filter
+        // Date filter: multi-timezone matching (direct string, UTC, local)
         if (selectedDate) {
-          const alertDateKey = parseDateKey(alert.confirmedAt || alert.createdAt);
-          if (alertDateKey !== selectedDate) return false;
+          const alertDateKeys = getAlertDateKeys(alert.confirmedAt || alert.createdAt);
+          if (!alertDateKeys.includes(selectedDate)) return false;
         }
 
         // Search query
@@ -1084,7 +1307,17 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
       .sort((a, b) => {
         const timeA = new Date(a.confirmedAt || a.createdAt).getTime() || 0;
         const timeB = new Date(b.confirmedAt || b.createdAt).getTime() || 0;
-        return sortOrder === 'desc' ? timeB - timeA : timeA - timeB;
+        if (sortOrder === 'desc') return timeB - timeA;
+        if (sortOrder === 'asc') return timeA - timeB;
+        if (sortOrder === 'severity') {
+          const diff = getSeverityRank(b) - getSeverityRank(a);
+          return diff !== 0 ? diff : timeB - timeA;
+        }
+        if (sortOrder === 'confidence') {
+          const diff = (b.confidence || 0) - (a.confidence || 0);
+          return diff !== 0 ? diff : timeB - timeA;
+        }
+        return timeB - timeA;
       });
   }, [
     mergedAlerts,
@@ -1144,8 +1377,11 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     const found = cameras.find((c) => c.id === selectedCamera);
     const cameraAlerts = mergedAlerts.filter((a) => a.cameraId === selectedCamera);
     return {
+      id: selectedCamera,
+      code: found?.code || selectedCamera,
       name: found?.name || selectedCamera,
       zone: found?.zone || cameraAlerts[0]?.zone || 'General Facility',
+      isOnline: found ? found.status === 'ONLINE' : true,
       violationsCount: cameraAlerts.length,
     };
   }, [selectedCamera, cameras, mergedAlerts]);
@@ -1177,6 +1413,29 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
       throw e;
     } finally {
       setResolvingId(null);
+    }
+  };
+
+  // Incident & Evidence Deletion Handler (Purges DB record and physical photo from disk)
+  const handleDeleteIncident = async (id: string) => {
+    try {
+      await anomalyService.deleteAnomaly(id);
+      setDeletedAlertIds((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+      setHistoricalAlerts((prev) => prev.filter((a) => a.id !== id));
+      if (inspectAlert && inspectAlert.id === id) {
+        setInspectAlert(null);
+      }
+      onDeleteAlert?.(id);
+      fetchEvidenceDates();
+      soundService.playTactileBlip(550, 0.04);
+    } catch (e) {
+      console.error('Failed to delete incident:', e);
+      alert('Failed to delete incident: ' + (e instanceof Error ? e.message : String(e)));
+      throw e;
     }
   };
 
@@ -1227,10 +1486,10 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
           </div>
 
           <div className="flex items-center gap-2.5">
-            <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-              <Check className="h-3.5 w-3.5" />
-              backend/data Connected
-            </span>
+            <div className="hidden sm:flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-mono font-medium text-emerald-600 dark:text-emerald-400 shadow-xs">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
+              <span>LIVE AI MONITORING ACTIVE</span>
+            </div>
 
             {onRefresh && (
               <button
@@ -1340,45 +1599,80 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         </div>
       </section>
 
-      {/* ─── Camera-based Banner View (If Camera selected) ──────────────── */}
+      {/* ─── Camera Filter Active HUD Banner ─────────────────────────── */}
       {selectedCameraMeta && (
-        <div className="relative overflow-hidden rounded-2xl border border-[#f97316]/30 bg-gradient-to-r from-[#f97316]/10 via-[#0f1524] to-[#0a0e1a] p-4 text-white shadow-md">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#f97316]/20 text-[#f97316] border border-[#f97316]/40">
-                <CameraIcon className="h-6 w-6" />
+        <div className="relative overflow-hidden rounded-2xl border border-orange-500/30 bg-[#090b10] p-4 text-slate-100 shadow-xl">
+          {/* Subtle Cyber Grid & Scanline Background */}
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,#ffffff05_1px,transparent_1px),linear-gradient(to_bottom,#ffffff05_1px,transparent_1px)] bg-[size:16px_16px] opacity-40" />
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,transparent_50%,rgba(0,0,0,0.4)_51%)] bg-[length:100%_4px] opacity-25" />
+
+          <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            {/* Left: Camera Identification & Telemetry */}
+            <div className="flex items-center gap-3.5">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-orange-500/30 bg-orange-500/10 text-orange-500 shadow-[0_0_15px_rgba(249,115,22,0.15)]">
+                <CameraIcon className="h-5 w-5" />
               </div>
+
               <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-base sm:text-lg font-bold tracking-tight text-white">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-[11px] font-bold text-orange-500 tracking-wider">
+                    {selectedCameraMeta.code}
+                  </span>
+                  <span className="text-slate-600 dark:text-slate-500 text-xs">/</span>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white tracking-tight">
                     {selectedCameraMeta.name}
                   </h3>
-                  <span className="rounded bg-[#f97316]/20 px-2 py-0.5 text-[10px] font-mono text-[#f97316]">
-                    Camera Filtered
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-mono font-bold uppercase ${
+                      selectedCameraMeta.isOnline
+                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500'
+                        : 'border-red-500/30 bg-red-500/10 text-red-500'
+                    }`}
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${
+                        selectedCameraMeta.isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'
+                      }`}
+                    />
+                    {selectedCameraMeta.isOnline ? 'LIVE FEED ACTIVE' : 'OFFLINE'}
                   </span>
                 </div>
-                <p className="text-xs text-slate-300">
-                  Zone: <span className="font-semibold text-white">{selectedCameraMeta.zone}</span>
-                </p>
+
+                <div className="flex items-center gap-3 mt-1 text-xs text-slate-400 font-mono">
+                  <span className="flex items-center gap-1.5 text-slate-300">
+                    <Layers className="h-3 w-3 text-orange-500" />
+                    <span>Zone: <strong className="text-slate-100">{selectedCameraMeta.zone}</strong></span>
+                  </span>
+                  <span>•</span>
+                  <span>Filtered Channel View</span>
+                </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <div className="rounded-xl border border-white/10 bg-black/40 px-4 py-2 text-right">
-                <div className="text-[10px] font-mono uppercase tracking-wider text-slate-400">
-                  Evidence Photos
-                </div>
-                <div className="text-xl font-bold text-[#f97316]">
-                  {selectedCameraMeta.violationsCount}
+            {/* Right: Violation Stats & Dismiss Filter */}
+            <div className="flex items-center gap-3 self-end sm:self-auto">
+              <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/40 px-3.5 py-2">
+                <div className="text-right">
+                  <div className="text-[9px] font-mono uppercase tracking-widest text-slate-400">
+                    Evidence Records
+                  </div>
+                  <div className="text-lg font-bold font-mono text-orange-500 leading-tight">
+                    {selectedCameraMeta.violationsCount}
+                  </div>
                 </div>
               </div>
 
               <button
-                onClick={() => setSelectedCamera('ALL')}
-                className="rounded-lg border border-white/10 bg-white/5 p-2 text-slate-400 hover:bg-white/15 hover:text-white"
-                title="Clear camera filter"
+                type="button"
+                onClick={() => {
+                  soundService.playTactileBlip(600, 0.02);
+                  setSelectedCamera('ALL');
+                }}
+                className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white transition cursor-pointer"
+                title="Clear camera filter (Show all cameras)"
               >
-                <X className="h-4 w-4" />
+                <X className="h-3.5 w-3.5" />
+                <span>Show All</span>
               </button>
             </div>
           </div>
@@ -1409,72 +1703,278 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             )}
           </div>
 
-          {/* Date Selector Presets & Calendar Input (Integrated) */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            {/* Quick Date Presets */}
-            <div className="flex items-center rounded-xl border border-black/10 dark:border-white/10 bg-slate-100 dark:bg-[#090b10] p-0.5">
+          {/* Awesome Interactive Calendar Component */}
+          <div className="flex items-center gap-1.5">
+            <div className="relative" ref={calendarRef}>
               <button
-                onClick={() => handleDatePreset('ALL')}
-                className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                  !selectedDate
-                    ? 'bg-white dark:bg-white/15 text-slate-900 dark:text-white shadow-xs font-semibold'
-                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                type="button"
+                onClick={() => {
+                  soundService.playTactileBlip(750, 0.02);
+                  setIsCalendarOpen((prev) => !prev);
+                }}
+                className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition cursor-pointer shadow-xs ${
+                  selectedDate
+                    ? 'border-orange-500/60 bg-orange-500/10 text-orange-500 dark:text-orange-400 ring-1 ring-orange-500/30'
+                    : 'border-black/10 dark:border-white/10 bg-slate-50 dark:bg-[#090b10] text-slate-700 dark:text-slate-300 hover:border-orange-500/40 dark:hover:border-white/20'
                 }`}
+                title="Open Incident Calendar"
               >
-                All Dates
+                <CalendarDays className={`h-4 w-4 shrink-0 ${selectedDate ? 'text-orange-500' : 'text-slate-400'}`} />
+                <span className="tracking-tight select-none">
+                  {selectedDate ? formatRegisteredDate(selectedDate) : 'Select Date'}
+                </span>
+
+                {/* Day Incident Count Badge */}
+                {selectedDate && selectedDateStats && (
+                  <span className="rounded bg-orange-500/20 px-1.5 py-0.5 font-mono text-[9.5px] font-bold text-orange-400 border border-orange-500/30">
+                    {selectedDateStats.totalAlerts}
+                  </span>
+                )}
+
+                {/* Clear Button or Dropdown Chevron */}
+                {selectedDate ? (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      soundService.playTactileBlip(600, 0.02);
+                      setSelectedDate('');
+                      setDatePreset('ALL');
+                      setIsCalendarOpen(false);
+                    }}
+                    title="Clear date filter"
+                    className="ml-0.5 p-0.5 text-slate-400 hover:text-red-500 transition rounded cursor-pointer"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </span>
+                ) : (
+                  <ChevronDown
+                    className={`h-3.5 w-3.5 text-slate-400 transition-transform duration-200 ${
+                      isCalendarOpen ? 'rotate-180 text-orange-500' : ''
+                    }`}
+                  />
+                )}
               </button>
 
-              {availableDateOptions.slice(0, 3).map((ed) => {
-                const isSelected = selectedDate === ed.date;
-                return (
-                  <button
-                    key={ed.date}
-                    onClick={() => {
-                      setSelectedDate(ed.date);
-                      setDatePreset('CUSTOM');
-                    }}
-                    className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                      isSelected
-                        ? 'bg-white dark:bg-white/15 text-[#f97316] shadow-xs font-bold'
-                        : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                    }`}
-                  >
-                    <span>{formatRegisteredDate(ed.date)}</span>
-                    {ed.evidencePhotos > 0 && (
-                      <span className="rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 px-1 py-0.2 text-[9px] font-mono font-bold">
-                        {ed.evidencePhotos}
-                      </span>
+              {/* Custom Awesome Calendar Dropdown Popover */}
+              {isCalendarOpen && (
+                <div
+                  className="absolute right-0 sm:left-0 top-full mt-2 z-50 w-[310px] sm:w-[340px] overflow-hidden rounded-2xl border border-orange-500/30 bg-[#090b10] p-4 text-slate-100 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-xl animate-fadeIn"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {/* Micro Scanline & Grid Background */}
+                  <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,#ffffff04_1px,transparent_1px),linear-gradient(to_bottom,#ffffff04_1px,transparent_1px)] bg-[size:12px_12px] opacity-30" />
+                  <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,transparent_50%,rgba(0,0,0,0.35)_51%)] bg-[length:100%_4px] opacity-20" />
+
+                  <div className="relative z-10">
+                    {/* Popover Header: Month Navigation */}
+                    <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundService.playTactileBlip(650, 0.02);
+                          setCalendarViewDate(
+                            (prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1)
+                          );
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-lg transition cursor-pointer"
+                        title="Previous month"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-sm text-white tracking-tight">
+                          {viewMonthLabel}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            soundService.playTactileBlip(800, 0.02);
+                            const now = new Date();
+                            setCalendarViewDate(new Date(now.getFullYear(), now.getMonth(), 1));
+                            setSelectedDate(todayKey);
+                            setDatePreset('TODAY');
+                            setIsCalendarOpen(false);
+                          }}
+                          className="px-2 py-1 text-[10px] font-mono font-bold uppercase rounded-md border border-orange-500/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 transition cursor-pointer"
+                          title="Jump to today"
+                        >
+                          Today
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            soundService.playTactileBlip(650, 0.02);
+                            setCalendarViewDate(
+                              (prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1)
+                            );
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-lg transition cursor-pointer"
+                          title="Next month"
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Day of Week Headers */}
+                    <div className="grid grid-cols-7 gap-1 pt-3 pb-1 text-center font-mono text-[10.5px] font-bold text-slate-500 uppercase tracking-wider">
+                      <span>Su</span>
+                      <span>Mo</span>
+                      <span>Tu</span>
+                      <span>We</span>
+                      <span>Th</span>
+                      <span>Fr</span>
+                      <span>Sa</span>
+                    </div>
+
+                    {/* Days Grid */}
+                    <div className="grid grid-cols-7 gap-1 py-1">
+                      {calendarGrid.map(({ day, isCurrentMonth, dateKey }) => {
+                        const isSelected = selectedDate === dateKey;
+                        const isToday = dateKey === todayKey;
+                        const stats = dateStatsMap.get(dateKey);
+                        const hasIncidents = Boolean(stats && stats.totalAlerts > 0);
+                        const photoCount = stats?.evidencePhotos || 0;
+
+                        return (
+                          <button
+                            key={dateKey}
+                            type="button"
+                            onClick={() => {
+                              soundService.playTactileBlip(820, 0.03);
+                              setSelectedDate(dateKey);
+                              setDatePreset('CUSTOM');
+                              setIsCalendarOpen(false);
+                            }}
+                            title={
+                              hasIncidents
+                                ? `${formatRegisteredDate(dateKey)}: ${stats!.totalAlerts} incident(s), ${photoCount} evidence photo(s)`
+                                : formatRegisteredDate(dateKey)
+                            }
+                            className={`group relative flex flex-col items-center justify-center h-8.5 rounded-xl text-xs font-mono transition-all cursor-pointer ${
+                              isSelected
+                                ? 'bg-gradient-to-br from-orange-500 to-amber-500 text-black font-bold shadow-[0_0_12px_rgba(249,115,22,0.6)] z-10'
+                                : isToday
+                                ? 'border border-orange-500/60 text-orange-400 bg-orange-500/10 font-bold'
+                                : !isCurrentMonth
+                                ? 'text-slate-600 opacity-30 hover:opacity-70 hover:bg-white/5'
+                                : hasIncidents
+                                ? 'text-white bg-white/[0.05] hover:bg-orange-500/20 font-semibold border border-orange-500/25'
+                                : 'text-slate-400 hover:text-white hover:bg-white/5'
+                            }`}
+                          >
+                            <span className="text-[11.5px]">{day}</span>
+
+                            {/* Incident indicator beacon */}
+                            {hasIncidents && !isSelected && (
+                              <span
+                                className={`absolute bottom-1 h-1.5 w-1.5 rounded-full ${
+                                  photoCount > 0
+                                    ? 'bg-orange-400 shadow-[0_0_6px_rgba(249,115,22,0.8)] animate-pulse'
+                                    : 'bg-cyan-400'
+                                }`}
+                              />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Quick Incident Dates Selector */}
+                    {availableDateOptions.length > 0 && (
+                      <div className="mt-2.5 pt-2.5 border-t border-white/10">
+                        <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 mb-1.5">
+                          <span className="flex items-center gap-1 font-semibold text-slate-300">
+                            <Sparkles className="h-3 w-3 text-orange-400" />
+                            Incident Dates in System
+                          </span>
+                          <span className="text-[9px] text-slate-400 font-mono">
+                            {availableDateOptions.length} active
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto pr-1">
+                          {availableDateOptions.map((opt) => {
+                            const isOptSelected = selectedDate === opt.date;
+                            return (
+                              <button
+                                key={opt.date}
+                                type="button"
+                                onClick={() => {
+                                  soundService.playTactileBlip(800, 0.02);
+                                  setSelectedDate(opt.date);
+                                  setDatePreset('CUSTOM');
+                                  setIsCalendarOpen(false);
+                                }}
+                                className={`px-2 py-1 rounded-lg text-[10.5px] font-mono flex items-center gap-1.5 transition cursor-pointer ${
+                                  isOptSelected
+                                    ? 'bg-orange-500 text-black font-bold shadow-xs'
+                                    : 'bg-white/5 hover:bg-orange-500/15 text-slate-300 hover:text-white border border-white/10'
+                                }`}
+                              >
+                                <span className="h-1.5 w-1.5 rounded-full bg-orange-400" />
+                                <span>{formatRegisteredDate(opt.date)}</span>
+                                <span className="rounded bg-black/50 px-1 py-0.2 text-[9px] font-bold text-orange-400">
+                                  {opt.totalAlerts}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
                     )}
-                  </button>
-                );
-              })}
+
+                    {/* Popover Footer */}
+                    <div className="mt-3 pt-2.5 border-t border-white/10 flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundService.playTactileBlip(600, 0.02);
+                          setSelectedDate('');
+                          setDatePreset('ALL');
+                          setIsCalendarOpen(false);
+                        }}
+                        className="text-xs font-semibold text-slate-400 hover:text-red-400 transition cursor-pointer flex items-center gap-1"
+                      >
+                        <X className="h-3 w-3" />
+                        <span>Show All Dates</span>
+                      </button>
+                      <span className="text-[10px] font-mono text-slate-400">
+                        {mergedAlerts.length} total events
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Calendar Specific Date Input */}
-            <label className="flex items-center gap-1.5 rounded-xl border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-[#090b10] px-2.5 py-1.5 text-xs text-slate-600 dark:text-slate-300">
-              <CalendarDays className="h-3.5 w-3.5 text-[#f97316]" />
-              <input
-                type="date"
-                value={selectedDate}
-                onChange={(e) => {
-                  setSelectedDate(e.target.value);
-                  setDatePreset('CUSTOM');
-                }}
-                className="bg-transparent text-xs text-slate-800 dark:text-slate-200 outline-none [color-scheme:dark]"
-              />
-              {selectedDate && (
-                <button
-                  onClick={() => {
-                    setSelectedDate('');
-                    setDatePreset('ALL');
-                  }}
-                  title="Clear date selection"
-                  className="text-slate-400 hover:text-slate-900 dark:hover:text-white ml-0.5"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-            </label>
+            {/* Quick Today Toggle */}
+            <button
+              type="button"
+              onClick={() => {
+                soundService.playTactileBlip(750, 0.02);
+                if (selectedDate === todayKey) {
+                  setSelectedDate('');
+                  setDatePreset('ALL');
+                } else {
+                  setSelectedDate(todayKey);
+                  setDatePreset('TODAY');
+                }
+              }}
+              className={`rounded-xl border px-3 py-2 text-xs font-semibold transition cursor-pointer ${
+                selectedDate === todayKey
+                  ? 'border-[#f97316] bg-[#f97316] text-white shadow-xs font-bold'
+                  : 'border-black/10 dark:border-white/10 bg-slate-50 dark:bg-[#090b10] text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              Today
+            </button>
           </div>
 
           {/* Right Toolbar: View Modes + Sort */}
@@ -1482,8 +1982,11 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             {/* View Mode Switcher: By Camera (Default) / All Cards / Table */}
             <div className="flex items-center rounded-xl border border-black/10 dark:border-white/10 bg-slate-100 dark:bg-[#090b10] p-0.5">
               <button
-                onClick={() => setViewMode('byCamera')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
+                onClick={() => {
+                  soundService.playTactileBlip(700, 0.02);
+                  setViewMode('byCamera');
+                }}
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition cursor-pointer ${
                   viewMode === 'byCamera'
                     ? 'bg-white dark:bg-white/15 text-slate-900 dark:text-white shadow-xs'
                     : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
@@ -1495,8 +1998,11 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
               </button>
 
               <button
-                onClick={() => setViewMode('grid')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
+                onClick={() => {
+                  soundService.playTactileBlip(700, 0.02);
+                  setViewMode('grid');
+                }}
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition cursor-pointer ${
                   viewMode === 'grid'
                     ? 'bg-white dark:bg-white/15 text-slate-900 dark:text-white shadow-xs'
                     : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
@@ -1508,8 +2014,11 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
               </button>
 
               <button
-                onClick={() => setViewMode('table')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
+                onClick={() => {
+                  soundService.playTactileBlip(700, 0.02);
+                  setViewMode('table');
+                }}
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition cursor-pointer ${
                   viewMode === 'table'
                     ? 'bg-white dark:bg-white/15 text-slate-900 dark:text-white shadow-xs'
                     : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
@@ -1521,15 +2030,25 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
               </button>
             </div>
 
-            {/* Sort Order Toggle */}
-            <button
-              onClick={() => setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))}
-              className="flex items-center gap-1.5 rounded-xl border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-[#090b10] px-3 py-1.5 text-xs text-slate-700 dark:text-slate-300 hover:border-[#f97316]/50"
-              title="Toggle sort order"
-            >
-              <ArrowUpDown className="h-3.5 w-3.5 text-[#f97316]" />
-              <span>{sortOrder === 'desc' ? 'Newest' : 'Oldest'}</span>
-            </button>
+            {/* Comprehensive Sort Dropdown */}
+            <div className="relative">
+              <select
+                value={sortOrder}
+                onChange={(e) => {
+                  soundService.playTactileBlip(600, 0.02);
+                  setSortOrder(e.target.value as any);
+                }}
+                className="appearance-none text-xs font-semibold tracking-tight bg-slate-50 dark:bg-[#090b10] text-slate-800 dark:text-slate-200 border border-black/10 dark:border-white/10 rounded-xl pl-3 pr-8 py-2 hover:border-orange-500/50 focus:outline-none focus:border-orange-500 cursor-pointer"
+              >
+                <option value="desc">Newest First</option>
+                <option value="asc">Oldest First</option>
+                <option value="severity">Highest Severity</option>
+                <option value="confidence">Highest Confidence</option>
+              </select>
+              <div className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">
+                ▼
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1618,27 +2137,42 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             </select>
           </div>
 
-          {/* Evidence Photos Only Toggle */}
-          <button
-            onClick={() => setEvidenceOnly((prev) => !prev)}
-            className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
-              evidenceOnly
-                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shadow-xs'
-                : 'border-black/10 dark:border-white/10 bg-slate-50 dark:bg-[#090b10] text-slate-500 hover:text-slate-900 dark:hover:text-white'
-            }`}
-            title="Filter to only events with captured evidence photos"
-          >
-            <CameraIcon className="h-3.5 w-3.5 text-emerald-500" />
-            <span>
-              {evidenceOnly ? `Evidence Photos (${totalWithEvidenceCount})` : `All Logs (${mergedAlerts.length})`}
-            </span>
-          </button>
+          {/* Segment: All Incidents vs Photo Proof */}
+          <div className="flex items-center rounded-xl border border-black/10 dark:border-white/10 bg-slate-100 dark:bg-[#090b10] p-0.5">
+            <button
+              onClick={() => {
+                soundService.playTactileBlip(750, 0.02);
+                setEvidenceOnly(false);
+              }}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer ${
+                !evidenceOnly
+                  ? 'bg-white dark:bg-white/15 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <span>All Incidents ({mergedAlerts.length})</span>
+            </button>
+            <button
+              onClick={() => {
+                soundService.playTactileBlip(750, 0.02);
+                setEvidenceOnly(true);
+              }}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer ${
+                evidenceOnly
+                  ? 'bg-white dark:bg-white/15 text-emerald-600 dark:text-emerald-400 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <CameraIcon className="w-3 h-3 text-emerald-500" />
+              <span>With Photo Proof ({totalWithEvidenceCount})</span>
+            </button>
+          </div>
 
           {/* Reset Filters Button */}
           {hasActiveFilters && (
             <button
               onClick={resetFilters}
-              className="flex items-center gap-1 rounded-xl border border-red-500/20 bg-red-500/10 px-2.5 py-1.5 text-xs font-semibold text-red-500 dark:text-red-400 hover:bg-red-500/20"
+              className="flex items-center gap-1 rounded-xl border border-red-500/20 bg-red-500/10 px-2.5 py-1.5 text-xs font-semibold text-red-500 dark:text-red-400 hover:bg-red-500/20 cursor-pointer"
             >
               <X className="h-3.5 w-3.5" /> Clear Filters
             </button>
@@ -1646,7 +2180,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
 
           {/* Match Count Badge */}
           <div className="ml-auto text-xs font-mono text-slate-500">
-            Showing <span className="font-bold text-slate-900 dark:text-white">{filteredAlerts.length}</span> {evidenceOnly ? 'evidence photos' : 'events'} of {alerts.length}
+            Showing <span className="font-bold text-slate-900 dark:text-white">{filteredAlerts.length}</span> {evidenceOnly ? 'evidence photos' : 'events'} of {mergedAlerts.length}
           </div>
         </div>
       </section>
@@ -1762,6 +2296,11 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
                       alert={alert}
                       onInspect={() => setInspectAlert(alert)}
                       onQuickResolve={() => handleStatusUpdate(alert.id, 'RESOLVED')}
+                      onDelete={() => {
+                        if (window.confirm('Permanently delete this incident and its stored evidence photo from disk?')) {
+                          handleDeleteIncident(alert.id);
+                        }
+                      }}
                       isResolving={resolvingId === alert.id}
                     />
                   ))}
@@ -1779,6 +2318,11 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
               alert={alert}
               onInspect={() => setInspectAlert(alert)}
               onQuickResolve={() => handleStatusUpdate(alert.id, 'RESOLVED')}
+              onDelete={() => {
+                if (window.confirm('Permanently delete this incident and its stored evidence photo from disk?')) {
+                  handleDeleteIncident(alert.id);
+                }
+              }}
               isResolving={resolvingId === alert.id}
             />
           ))}
@@ -1887,15 +2431,29 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
 
                       {/* Action */}
                       <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setInspectAlert(alert);
-                          }}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-slate-100 dark:bg-white/5 px-3 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 transition hover:bg-[#f97316] hover:text-white hover:border-[#f97316]"
-                        >
-                          <Eye className="h-3 w-3" /> View
-                        </button>
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setInspectAlert(alert);
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-slate-100 dark:bg-white/5 px-3 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 transition hover:bg-[#f97316] hover:text-white hover:border-[#f97316] cursor-pointer"
+                          >
+                            <Eye className="h-3 w-3" /> View
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm('Permanently delete this incident and its stored evidence photo from disk?')) {
+                                handleDeleteIncident(alert.id);
+                              }
+                            }}
+                            className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition cursor-pointer"
+                            title="Delete Incident & Erase Photo"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1913,6 +2471,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
           alertsList={filteredAlerts}
           onClose={() => setInspectAlert(null)}
           onStatusChange={handleStatusUpdate}
+          onDelete={handleDeleteIncident}
         />
       )}
     </div>
