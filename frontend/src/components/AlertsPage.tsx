@@ -34,6 +34,7 @@ import {
   Grid,
   Trash2,
   User,
+  CameraOff,
 } from 'lucide-react';
 import { AnomalyAlertEvent, Camera } from '../types';
 import { anomalyService } from '../services/anomalyService';
@@ -206,6 +207,17 @@ const getSeverityRank = (alert: AnomalyAlertEvent): number => {
 
 const formatRegisteredDate = (iso?: string | null): string => {
   if (!iso) return '--';
+  const match = String(iso).match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
+  if (match) {
+    const y = parseInt(match[1], 10);
+    const m = parseInt(match[2], 10) - 1;
+    const d = parseInt(match[3], 10);
+    return new Date(y, m, d).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    }); // e.g. "11 Sep 2026"
+  }
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString('en-GB', {
@@ -217,6 +229,17 @@ const formatRegisteredDate = (iso?: string | null): string => {
 
 const formatFullDate = (iso?: string | null): string => {
   if (!iso) return '--';
+  const match = String(iso).match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
+  if (match) {
+    const y = parseInt(match[1], 10);
+    const m = parseInt(match[2], 10) - 1;
+    const d = parseInt(match[3], 10);
+    return new Date(y, m, d).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    }); // e.g. "11 September 2026"
+  }
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString('en-GB', {
@@ -1126,7 +1149,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         }
         const item = map.get(dKey)!;
         item.totalAlerts += 1;
-        if (a.snapshotPath || a.id) {
+        if (a.snapshotPath && a.snapshotPath.trim()) {
           item.evidencePhotos += 1;
         }
       }
@@ -1134,6 +1157,33 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
 
     return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
   }, [evidenceDates, mergedAlerts]);
+
+  // Calendar dates that strictly contain real captured evidence photos, sorted newest calendar date first
+  const datesWithPhotos = useMemo(() => {
+    return availableDateOptions
+      .filter((d) => d.evidencePhotos > 0)
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [availableDateOptions]);
+
+  // Immediate previous and next calendar dates that have photos (relative to current selectedDate)
+  const adjacentPhotoDates = useMemo(() => {
+    if (datesWithPhotos.length === 0) {
+      return { prevDateWithPhotos: null, nextDateWithPhotos: null, latestDateWithPhotos: null };
+    }
+    const latest = datesWithPhotos[0].date;
+    if (!selectedDate) {
+      return { prevDateWithPhotos: latest, nextDateWithPhotos: null, latestDateWithPhotos: latest };
+    }
+
+    const earlierDates = datesWithPhotos.filter((d) => d.date < selectedDate);
+    const laterDates = datesWithPhotos.filter((d) => d.date > selectedDate);
+
+    return {
+      prevDateWithPhotos: earlierDates.length > 0 ? earlierDates[0].date : null,
+      nextDateWithPhotos: laterDates.length > 0 ? laterDates[laterDates.length - 1].date : null,
+      latestDateWithPhotos: latest,
+    };
+  }, [selectedDate, datesWithPhotos]);
 
   // Connect global window helper for modal prev/next keyboard navigation
   useEffect(() => {
@@ -1406,6 +1456,27 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
   const totalWithEvidenceCount = useMemo(() => {
     return mergedAlerts.filter((a) => Boolean(a.snapshotPath && a.snapshotPath.trim())).length;
   }, [mergedAlerts]);
+
+  // Dedicated metrics specifically for the currently selected calendar date
+  const selectedDateMetrics = useMemo(() => {
+    if (!selectedDate) {
+      return {
+        hasDate: false,
+        totalEvents: mergedAlerts.length,
+        totalPhotos: totalWithEvidenceCount,
+      };
+    }
+    const forDate = mergedAlerts.filter((a) => {
+      const keys = getAlertDateKeys(a.confirmedAt || a.createdAt);
+      return keys.includes(selectedDate);
+    });
+    const photos = forDate.filter((a) => Boolean(a.snapshotPath && a.snapshotPath.trim()));
+    return {
+      hasDate: true,
+      totalEvents: forDate.length,
+      totalPhotos: photos.length,
+    };
+  }, [selectedDate, mergedAlerts, totalWithEvidenceCount]);
 
   // Group filtered alerts per camera for the "By Camera" card stream view
   const cameraGroups = useMemo(() => {
@@ -1836,9 +1907,19 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
                 </span>
 
                 {/* Day Incident Count Badge */}
-                {selectedDate && selectedDateStats && (
-                  <span className="rounded bg-orange-500/20 px-1.5 py-0.5 font-mono text-[9.5px] font-bold text-orange-400 border border-orange-500/30">
-                    {selectedDateStats.totalAlerts}
+                {selectedDate && (
+                  <span
+                    className={`rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold border ${
+                      selectedDateMetrics.totalPhotos > 0
+                        ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                        : selectedDateMetrics.totalEvents > 0
+                        ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400 border-amber-500/30'
+                        : 'bg-black/5 dark:bg-white/10 text-slate-500 dark:text-slate-400 border-black/10 dark:border-white/10'
+                    }`}
+                  >
+                    {selectedDateMetrics.totalPhotos > 0
+                      ? `${selectedDateMetrics.totalPhotos} photos`
+                      : '0 photos'}
                   </span>
                 )}
 
@@ -2031,8 +2112,14 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
                               >
                                 <span className="h-1.5 w-1.5 rounded-full bg-orange-400" />
                                 <span>{formatRegisteredDate(opt.date)}</span>
-                                <span className="rounded bg-black/50 px-1 py-0.2 text-[9px] font-bold text-orange-400">
-                                  {opt.totalAlerts}
+                                <span
+                                  className={`rounded px-1.5 py-0.2 text-[9px] font-bold font-mono border ${
+                                    opt.evidencePhotos > 0
+                                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                                      : 'bg-black/40 text-slate-400 border-white/5'
+                                  }`}
+                                >
+                                  {opt.evidencePhotos > 0 ? `${opt.evidencePhotos} photos` : '0 photos'}
                                 </span>
                               </button>
                             );
@@ -2075,6 +2162,23 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             >
               <ChevronRight className="h-4 w-4" />
             </button>
+
+            {/* Quick Hop to Nearest Previous Date with Stored Photos */}
+            {selectedDateMetrics.totalPhotos === 0 && adjacentPhotoDates.prevDateWithPhotos && (
+              <button
+                type="button"
+                onClick={() => {
+                  soundService.playTactileBlip(800, 0.02);
+                  setSelectedDate(adjacentPhotoDates.prevDateWithPhotos!);
+                  setDatePreset('CUSTOM');
+                }}
+                className="hidden sm:flex items-center gap-1.5 rounded-xl border border-orange-500/40 bg-orange-500/10 hover:bg-orange-500/20 px-2.5 py-2 text-xs font-semibold text-orange-500 dark:text-orange-400 transition cursor-pointer shadow-xs"
+                title={`Hop to earlier date with photos: ${formatRegisteredDate(adjacentPhotoDates.prevDateWithPhotos)}`}
+              >
+                <CameraIcon className="h-3.5 w-3.5 text-orange-400" />
+                <span>Jump to {formatRegisteredDate(adjacentPhotoDates.prevDateWithPhotos)}</span>
+              </button>
+            )}
 
             {/* Quick Today Button */}
             <button
@@ -2309,6 +2413,24 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             </button>
           </div>
 
+          {/* Calendar Chronological Time Sort */}
+          <div className="flex items-center gap-1.5 rounded-xl border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-[#090b10] px-2.5 py-1.5 text-xs text-slate-600 dark:text-slate-300">
+            <ArrowUpDown className="h-3.5 w-3.5 text-[#f97316]" />
+            <select
+              value={sortOrder}
+              onChange={(e) => {
+                soundService.playTactileBlip(700, 0.02);
+                setSortOrder(e.target.value as any);
+              }}
+              className="bg-transparent text-xs text-slate-800 dark:text-slate-200 outline-none [color-scheme:dark] cursor-pointer"
+            >
+              <option value="desc">Newest Time First</option>
+              <option value="asc">Oldest Time First</option>
+              <option value="severity">Highest Severity</option>
+              <option value="confidence">Highest Confidence</option>
+            </select>
+          </div>
+
           {/* Reset Filters Button */}
           {hasActiveFilters && (
             <button
@@ -2328,57 +2450,128 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
 
       {/* ─── Alerts Evidence Views ──────────────────────────────────────── */}
       {filteredAlerts.length === 0 ? (
-        /* Empty State */
-        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-black/15 dark:border-white/10 bg-white/50 dark:bg-[#0c101c]/60 py-20 px-4 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.04] text-slate-400">
-            <FileSearch className="h-7 w-7" />
+        /* ─── Dedicated Empty State: Crystal-Clear Communication for No Photos ─── */
+        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-black/15 dark:border-white/10 bg-white/50 dark:bg-[#0c101c]/60 py-16 px-4 text-center">
+          {/* Visual Icon Badge */}
+          <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-orange-500 shadow-[0_0_20px_rgba(249,115,22,0.12)]">
+            <CameraOff className="h-8 w-8" />
+            <span className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-black border border-orange-500/40 font-mono text-[9px] font-bold text-orange-400">
+              0
+            </span>
           </div>
-          <h3 className="mt-4 text-base font-bold text-slate-800 dark:text-slate-200">
+
+          {/* Main Title */}
+          <h3 className="mt-5 text-lg font-bold text-slate-900 dark:text-white tracking-tight">
             {selectedDate === todayKey
-              ? 'No violations recorded today.'
+              ? 'No Evidence Photos Captured Today'
               : selectedDate
-              ? `No violations recorded on ${formatRegisteredDate(selectedDate)}.`
-              : 'No alerts found.'}
+              ? `No Evidence Photos on ${formatRegisteredDate(selectedDate)}`
+              : 'No Alerts Found'}
           </h3>
-          <p className="mt-1 text-xs text-slate-500 max-w-md">
+
+          {/* Status Badge */}
+          <div className="mt-2">
+            {selectedDate === todayKey ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-0.5 text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                0 PHOTOS RECORDED TODAY · FACILITY FULLY COMPLIANT
+              </span>
+            ) : selectedDate ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-0.5 text-xs font-mono font-bold text-amber-500 dark:text-amber-400">
+                <span>0 PHOTOS RECORDED ON THIS DATE</span>
+              </span>
+            ) : null}
+          </div>
+
+          {/* Subtext explanation */}
+          <p className="mt-2.5 text-xs text-slate-500 dark:text-slate-400 max-w-lg leading-relaxed">
             {selectedDate === todayKey
-              ? `All monitored cameras are currently compliant for today (${formatRegisteredDate(todayKey)}). Zero safety hazards detected.`
+              ? `All monitored cameras are running smoothly with zero PPE violations or hazards detected today (${formatRegisteredDate(todayKey)}). AI detection is actively scanning in the background.`
+              : selectedDate && selectedDateMetrics.totalEvents > 0 && selectedDateMetrics.totalPhotos === 0
+              ? `There are ${selectedDateMetrics.totalEvents} alert events registered for ${formatRegisteredDate(selectedDate)}, but none have stored snapshot photo proofs.`
               : selectedDate
-              ? `No anomalous events matched ${formatRegisteredDate(selectedDate)}. Navigate through previous dates or jump to recent incidents.`
-              : 'No alerts match your current filter criteria. Try adjusting or clearing your filters.'}
+              ? `There are zero surveillance violation photos or evidence snapshots stored for ${formatRegisteredDate(selectedDate)}. Use the date switcher or fast jump buttons below to inspect other days.`
+              : 'No alerts match your current filter criteria. Try adjusting your search keywords or clearing filters.'}
           </p>
 
-          {/* If looking at today and no alerts, provide 1-click jump to latest incident date! */}
-          {availableDateOptions.length > 0 && selectedDate === todayKey && (
-            <div className="mt-4 flex flex-col items-center gap-2">
-              <span className="text-[11px] font-mono text-slate-400">
-                Previous incident date detected in system:
-              </span>
+          {/* Smart Calendar Navigation Quick Actions */}
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5 max-w-xl">
+            {/* Action 1: If there are events without photos and evidenceOnly is on */}
+            {selectedDate && selectedDateMetrics.totalEvents > 0 && selectedDateMetrics.totalPhotos === 0 && evidenceOnly && (
+              <button
+                type="button"
+                onClick={() => {
+                  soundService.playTactileBlip(750, 0.02);
+                  setEvidenceOnly(false);
+                }}
+                className="flex items-center gap-2 rounded-xl border border-cyan-500/40 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 px-4 py-2.5 text-xs font-semibold transition cursor-pointer shadow-xs"
+              >
+                <span>View {selectedDateMetrics.totalEvents} Violation Events (Without Photos)</span>
+              </button>
+            )}
+
+            {/* Action 2: Jump to Closest Previous Date with Photos */}
+            {adjacentPhotoDates.prevDateWithPhotos && (
               <button
                 type="button"
                 onClick={() => {
                   soundService.playTactileBlip(800, 0.02);
-                  setSelectedDate(availableDateOptions[0].date);
+                  setSelectedDate(adjacentPhotoDates.prevDateWithPhotos!);
                   setDatePreset('CUSTOM');
                 }}
-                className="flex items-center gap-2 rounded-xl border border-orange-500/40 bg-orange-500/10 hover:bg-orange-500/20 text-orange-400 px-4 py-2 text-xs font-semibold transition cursor-pointer shadow-xs"
+                className="flex items-center gap-2 rounded-xl border border-orange-500/40 bg-orange-500/10 hover:bg-orange-500/20 text-orange-500 dark:text-orange-400 px-4 py-2.5 text-xs font-semibold transition cursor-pointer shadow-xs hover:border-orange-500/60"
               >
-                <Sparkles className="h-3.5 w-3.5 text-orange-400" />
+                <ChevronLeft className="h-3.5 w-3.5 text-orange-400" />
                 <span>
-                  View Recent Incidents: {formatRegisteredDate(availableDateOptions[0].date)} ({availableDateOptions[0].totalAlerts} incidents)
+                  View Earlier Photos: <strong>{formatRegisteredDate(adjacentPhotoDates.prevDateWithPhotos)}</strong>
                 </span>
               </button>
-            </div>
-          )}
+            )}
 
-          {hasActiveFilters && (
-            <button
-              onClick={resetFilters}
-              className="mt-4 rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.05] dark:bg-white/[0.08] px-4 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-black/10 dark:hover:bg-white/15 cursor-pointer"
-            >
-              Reset All Filters
-            </button>
-          )}
+            {/* Action 3: Jump to Closest Later Date with Photos */}
+            {adjacentPhotoDates.nextDateWithPhotos && (
+              <button
+                type="button"
+                onClick={() => {
+                  soundService.playTactileBlip(800, 0.02);
+                  setSelectedDate(adjacentPhotoDates.nextDateWithPhotos!);
+                  setDatePreset('CUSTOM');
+                }}
+                className="flex items-center gap-2 rounded-xl border border-orange-500/40 bg-orange-500/10 hover:bg-orange-500/20 text-orange-500 dark:text-orange-400 px-4 py-2.5 text-xs font-semibold transition cursor-pointer shadow-xs hover:border-orange-500/60"
+              >
+                <span>
+                  Next Photos Day: <strong>{formatRegisteredDate(adjacentPhotoDates.nextDateWithPhotos)}</strong>
+                </span>
+                <ChevronRight className="h-3.5 w-3.5 text-orange-400" />
+              </button>
+            )}
+
+            {/* Action 4: Return to Today */}
+            {selectedDate !== todayKey && (
+              <button
+                type="button"
+                onClick={() => {
+                  soundService.playTactileBlip(750, 0.02);
+                  setSelectedDate(todayKey);
+                  setDatePreset('TODAY');
+                }}
+                className="flex items-center gap-1.5 rounded-xl border border-black/10 dark:border-white/10 bg-white/5 hover:bg-white/10 px-3.5 py-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 transition cursor-pointer"
+              >
+                <Calendar className="h-3.5 w-3.5 text-[#06b6d4]" />
+                <span>Return to Today</span>
+              </button>
+            )}
+
+            {/* Action 5: Reset all filters */}
+            {hasActiveFilters && (
+              <button
+                onClick={resetFilters}
+                className="rounded-xl border border-red-500/20 bg-red-500/10 px-3.5 py-2.5 text-xs font-semibold text-red-500 dark:text-red-400 hover:bg-red-500/20 transition cursor-pointer"
+              >
+                Reset All Filters
+              </button>
+            )}
+          </div>
         </div>
       ) : viewMode === 'byCamera' ? (
         /* ─── 1. Per-Camera Card Stream View (Default) ──────────────────── */
@@ -2479,23 +2672,71 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
           })}
         </div>
       ) : viewMode === 'grid' ? (
-        /* ─── 2. All Evidence Photos Flat Grid ───────────────────────────── */
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-          {filteredAlerts.map((alert) => (
-            <IncidentEvidenceCard
-              key={alert.id}
-              alert={alert}
-              onInspect={() => setInspectAlert(alert)}
-              onQuickResolve={() => handleStatusUpdate(alert.id, 'RESOLVED')}
-              onDelete={() => {
-                if (window.confirm('Permanently delete this incident and its stored evidence photo from disk?')) {
-                  handleDeleteIncident(alert.id);
-                }
-              }}
-              isResolving={resolvingId === alert.id}
-            />
-          ))}
-        </div>
+        /* ─── 2. All Evidence Photos Grid (Date-Grouped when All Dates) ───── */
+        selectedDate === '' ? (
+          <div className="space-y-6">
+            {availableDateOptions.map((dateOpt) => {
+              const dayAlerts = filteredAlerts.filter((a) => {
+                const keys = getAlertDateKeys(a.confirmedAt || a.createdAt);
+                return keys.includes(dateOpt.date);
+              });
+              if (dayAlerts.length === 0) return null;
+              return (
+                <div key={dateOpt.date} className="space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-black/[0.08] dark:border-white/[0.08]">
+                    <div className="flex items-center gap-2">
+                      <Calendar className="h-4 w-4 text-[#f97316]" />
+                      <h4 className="text-sm font-bold text-slate-900 dark:text-white">
+                        {formatFullDate(dateOpt.date)}
+                      </h4>
+                      {dateOpt.date === todayKey && (
+                        <span className="px-1.5 py-0.2 rounded text-[9.5px] font-mono font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                          TODAY
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-xs font-mono text-slate-500">
+                      {dayAlerts.length} {dayAlerts.length === 1 ? 'photo' : 'photos'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+                    {dayAlerts.map((alert) => (
+                      <IncidentEvidenceCard
+                        key={alert.id}
+                        alert={alert}
+                        onInspect={() => setInspectAlert(alert)}
+                        onQuickResolve={() => handleStatusUpdate(alert.id, 'RESOLVED')}
+                        onDelete={() => {
+                          if (window.confirm('Permanently delete this incident and its stored evidence photo from disk?')) {
+                            handleDeleteIncident(alert.id);
+                          }
+                        }}
+                        isResolving={resolvingId === alert.id}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+            {filteredAlerts.map((alert) => (
+              <IncidentEvidenceCard
+                key={alert.id}
+                alert={alert}
+                onInspect={() => setInspectAlert(alert)}
+                onQuickResolve={() => handleStatusUpdate(alert.id, 'RESOLVED')}
+                onDelete={() => {
+                  if (window.confirm('Permanently delete this incident and its stored evidence photo from disk?')) {
+                    handleDeleteIncident(alert.id);
+                  }
+                }}
+                isResolving={resolvingId === alert.id}
+              />
+            ))}
+          </div>
+        )
       ) : (
         /* ─── 3. Evidence Table View ─────────────────────────────────────── */
         <div className="overflow-hidden rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#0f0f12] shadow-sm">
