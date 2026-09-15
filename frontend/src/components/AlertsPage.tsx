@@ -35,6 +35,8 @@ import {
   Trash2,
   User,
   CameraOff,
+  Download,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { AnomalyAlertEvent, Camera } from '../types';
 import { anomalyService } from '../services/anomalyService';
@@ -249,16 +251,30 @@ const formatFullDate = (iso?: string | null): string => {
   }); // e.g. "11 September 2026"
 };
 
-const formatRegisteredTime = (iso?: string | null): string => {
-  if (!iso) return '--:--:--';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString('en-US', {
+export const parseIsoToUtc = (iso?: string | null): Date | null => {
+  if (!iso) return null;
+  let s = String(iso).trim();
+  // If no timezone indicator is present, explicitly treat as UTC ISO
+  if (!s.endsWith('Z') && !s.includes('+') && !s.match(/-\d{2}:\d{2}$/)) {
+    s = s.replace(' ', 'T') + 'Z';
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
+const formatRegisteredTime = (iso?: string | null, fallbackIst?: string | null): string => {
+  if (fallbackIst) return fallbackIst;
+  if (!iso) return '--:--:-- IST';
+  const d = parseIsoToUtc(iso);
+  if (!d) return iso;
+  const timeStr = d.toLocaleTimeString('en-US', {
+    timeZone: 'Asia/Kolkata',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
     hour12: true,
-  }); // e.g. "12:42:31 PM"
+  });
+  return `${timeStr} IST`;
 };
 
 // ─── Evidence Thumbnail Component ───────────────────────────────────────────
@@ -694,10 +710,10 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
 
                 <div className="flex items-center justify-between border-b border-white/5 pb-2">
                   <span className="text-slate-400 flex items-center gap-1.5">
-                    <Clock className="h-3.5 w-3.5 text-[#f97316]" /> Registered Time
+                    <Clock className="h-3.5 w-3.5 text-[#f97316]" /> Registered Time (IST)
                   </span>
-                  <span className="font-mono font-semibold text-slate-100">
-                    {formatRegisteredTime(currentAlert.confirmedAt || currentAlert.createdAt)}
+                  <span className="font-mono font-bold text-amber-400">
+                    {currentAlert.confirmedTimeIst || formatRegisteredTime(currentAlert.confirmedAt || currentAlert.createdAt)}
                   </span>
                 </div>
 
@@ -911,9 +927,12 @@ const IncidentEvidenceCard: React.FC<IncidentEvidenceCardProps> = ({
 
           {/* Bottom Bar Info on video viewport */}
           <div className="relative z-20 flex items-center justify-between text-[10.5px] font-mono text-zinc-300 pt-1">
-            <span className="truncate text-[10px] tracking-tight">{alert.zone || 'General Facility'}</span>
-            <span className="text-[10px] tracking-tight text-orange-400 font-bold">
-              {formatRegisteredTime(alert.confirmedAt || alert.createdAt)}
+            <span className="truncate text-[10px] tracking-tight flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              {alert.zone || 'General Facility'}
+            </span>
+            <span className="text-[10.5px] tracking-tight text-amber-400 font-bold drop-shadow">
+              {alert.confirmedTimeIst || formatRegisteredTime(alert.confirmedAt || alert.createdAt)}
             </span>
           </div>
         </div>
@@ -942,7 +961,26 @@ const IncidentEvidenceCard: React.FC<IncidentEvidenceCardProps> = ({
                   </span>
                 )}
                 <span className="text-[11px] font-mono text-[#8c8c8c] dark:text-[#71717a] truncate">
-                  {alert.cameraName || alert.cameraId} • {Math.round((alert.confidence || 0) * 100)}% Conf
+                  {alert.cameraName || alert.cameraId}
+                </span>
+              </div>
+
+              {/* Real-time confidence bar indicator */}
+              <div className="mt-2 flex items-center gap-2">
+                <div className="h-1.5 flex-1 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full ${
+                      alert.confidence >= 0.8
+                        ? 'bg-emerald-500'
+                        : alert.confidence >= 0.6
+                        ? 'bg-amber-500'
+                        : 'bg-red-500'
+                    }`}
+                    style={{ width: `${Math.min(100, Math.max(10, Math.round((alert.confidence || 0) * 100)))}%` }}
+                  />
+                </div>
+                <span className="text-[10px] font-mono font-bold text-zinc-400 shrink-0">
+                  {Math.round((alert.confidence || 0) * 100)}% Conf
                 </span>
               </div>
             </div>
@@ -1650,6 +1688,53 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
               <span>LIVE AI MONITORING ACTIVE</span>
             </div>
 
+            {/* Export Dropdown / Buttons */}
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={async () => {
+                  try {
+                    soundService.playTactileBlip(700, 0.02);
+                    await anomalyService.exportAnomalies('csv', {
+                      cameraId: selectedCamera,
+                      zone: selectedZone,
+                      anomalyType: selectedType,
+                      status: selectedStatus,
+                      date: selectedDate,
+                    });
+                  } catch (e) {
+                    alert('Export failed: ' + (e instanceof Error ? e.message : String(e)));
+                  }
+                }}
+                className="flex items-center gap-1.5 rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 transition hover:bg-black/[0.06] dark:hover:bg-white/10 cursor-pointer"
+                title="Export filtered anomalies to CSV with Indian Standard Time (IST)"
+              >
+                <Download className="h-3.5 w-3.5 text-amber-500" />
+                <span>CSV</span>
+              </button>
+
+              <button
+                onClick={async () => {
+                  try {
+                    soundService.playTactileBlip(700, 0.02);
+                    await anomalyService.exportAnomalies('xlsx', {
+                      cameraId: selectedCamera,
+                      zone: selectedZone,
+                      anomalyType: selectedType,
+                      status: selectedStatus,
+                      date: selectedDate,
+                    });
+                  } catch (e) {
+                    alert('Export failed: ' + (e instanceof Error ? e.message : String(e)));
+                  }
+                }}
+                className="flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-3 py-2 text-xs font-semibold text-emerald-600 dark:text-emerald-400 transition cursor-pointer"
+                title="Export filtered anomalies to Excel spreadsheet with Indian Standard Time (IST)"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-500" />
+                <span>Excel</span>
+              </button>
+            </div>
+
             {onRefresh && (
               <button
                 onClick={() => {
@@ -1657,7 +1742,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
                   fetchEvidenceDates();
                 }}
                 disabled={isLoading}
-                className="flex items-center gap-1.5 rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.05] px-3.5 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 transition hover:bg-black/[0.06] dark:hover:bg-white/10 disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.05] px-3.5 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 transition hover:bg-black/[0.06] dark:hover:bg-white/10 disabled:opacity-50 cursor-pointer"
                 title="Refresh alerts and evidence"
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />

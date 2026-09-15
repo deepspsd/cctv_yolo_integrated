@@ -190,6 +190,9 @@ export interface AnomalyAlertEvent {
   status: string;
   snapshotPath?: string | null;
   createdAt: string;
+  confirmedAtIst?: string | null;
+  confirmedTimeIst?: string | null;
+  confirmedDateIst?: string | null;
 }
 
 export type UserRole =

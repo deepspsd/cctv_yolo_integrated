@@ -164,6 +164,9 @@ class AnomalyEventResponse(BaseModel):
     status: str
     snapshot_path: str | None = Field(default=None, alias="snapshotPath")
     created_at: str = Field(..., alias="createdAt")
+    confirmed_at_ist: str | None = Field(default=None, alias="confirmedAtIst")
+    confirmed_time_ist: str | None = Field(default=None, alias="confirmedTimeIst")
+    confirmed_date_ist: str | None = Field(default=None, alias="confirmedDateIst")
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
 

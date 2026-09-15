@@ -97,6 +97,35 @@ export const anomalyService = {
     return res.json();
   },
 
+  async exportAnomalies(format: 'csv' | 'xlsx' = 'csv', filters: AnomalyFilters = {}): Promise<void> {
+    const params = new URLSearchParams();
+    params.append('format', format);
+    if (filters.cameraId) params.append('cameraId', filters.cameraId);
+    if (filters.zone && filters.zone !== 'ALL') params.append('zone', filters.zone);
+    if (filters.anomalyType && filters.anomalyType !== 'ALL') params.append('anomalyType', filters.anomalyType);
+    if (filters.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters.date) params.append('date', filters.date);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.order) params.append('order', filters.order);
+
+    const qs = params.toString();
+    const res = await apiFetch(`/anomalies/export?${qs}`);
+    if (!res.ok) {
+      throw new Error(`Export failed: ${res.statusText}`);
+    }
+
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `anomalies_ist_${new Date().toISOString().slice(0, 10)}.${format}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  },
+
   /**
    * Safe backend-served endpoint for evidence images.
    * Direct streaming via /api/anomalies/{id}/evidence?token=...

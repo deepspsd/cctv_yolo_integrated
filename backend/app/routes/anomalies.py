@@ -1,8 +1,10 @@
+import csv
+import io
 from datetime import datetime, timezone, time, timedelta
 from typing import Optional, List
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, asc
 from jose import JWTError
@@ -14,6 +16,23 @@ from app.auth import decode_access_token
 from app.security import decrypt_bytes
 from app.schemas import AnomalyEventResponse, AnomalyStatusUpdate
 from app.config import settings
+
+# Indian Standard Time (IST - Asia/Kolkata, UTC+5:30)
+IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+def to_utc_iso(dt: Optional[datetime]) -> Optional[str]:
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+def to_ist_str(dt: Optional[datetime], fmt: str = "%d %b %Y, %I:%M:%S %p IST") -> Optional[str]:
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST_TZ).strftime(fmt)
 
 router = APIRouter(
     prefix="/anomalies",
@@ -67,13 +86,16 @@ def format_anomaly(evt: AnomalyEvent, camera_name: Optional[str] = None, employe
         "employeeId": evt.employee_id,
         "employeeName": e_name,
         "alertMessage": alert_msg,
-        "firstSeenAt": evt.first_seen_at.isoformat() if evt.first_seen_at else None,
-        "confirmedAt": evt.confirmed_at.isoformat() if evt.confirmed_at else None,
-        "endedAt": evt.ended_at.isoformat() if evt.ended_at else None,
+        "firstSeenAt": to_utc_iso(evt.first_seen_at),
+        "confirmedAt": to_utc_iso(evt.confirmed_at),
+        "endedAt": to_utc_iso(evt.ended_at),
         "durationSeconds": evt.duration_seconds,
         "status": display_status,
         "snapshotPath": evt.snapshot_path,
-        "createdAt": evt.created_at.isoformat() if evt.created_at else None
+        "createdAt": to_utc_iso(evt.created_at),
+        "confirmedAtIst": to_ist_str(evt.confirmed_at),
+        "confirmedTimeIst": to_ist_str(evt.confirmed_at, "%I:%M:%S %p IST"),
+        "confirmedDateIst": to_ist_str(evt.confirmed_at, "%d %b %Y")
     }
 
 async def authenticate_request(
@@ -142,6 +164,9 @@ async def list_anomalies(
     List historical anomaly events with multi-criteria filtering and camera join.
     Strictly scoped to the authenticated user. Excludes PERSON_DETECTED.
     """
+    user_role = (getattr(user, "role", "") or "").upper()
+    is_admin = user_role in ("ADMINISTRATOR", "ADMIN", "FACILITY_MANAGER", "SECURITY_OFFICER")
+
     query = select(
         AnomalyEvent,
         Camera.name.label("camera_name"),
@@ -151,9 +176,11 @@ async def list_anomalies(
     ).outerjoin(
         Employee, AnomalyEvent.employee_id == Employee.id
     ).where(
-        (AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id),
         AnomalyEvent.anomaly_type != "PERSON_DETECTED"
     )
+
+    if not is_admin:
+        query = query.where((AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id))
 
     if camera_id:
         query = query.where(AnomalyEvent.camera_id == camera_id)
@@ -205,21 +232,23 @@ async def list_evidence_dates(
     """
     dates_map = {}
 
-    # 1. Aggregate from database scoped to current user's cameras
-    result = await db.execute(
-        select(
-            func.date(AnomalyEvent.created_at).label("d"),
-            func.count(AnomalyEvent.id).label("total"),
-            func.count(AnomalyEvent.snapshot_path).label("with_evidence")
-        )
-        .join(Camera, AnomalyEvent.camera_id == Camera.id)
-        .where(
-            (AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id),
-            AnomalyEvent.anomaly_type != "PERSON_DETECTED"
-        )
-        .group_by("d")
-        .order_by(desc("d"))
+    # 1. Aggregate from database scoped to current user's cameras (or all for admins)
+    user_role = (getattr(user, "role", "") or "").upper()
+    is_admin = user_role in ("ADMINISTRATOR", "ADMIN", "FACILITY_MANAGER", "SECURITY_OFFICER")
+
+    date_q = select(
+        func.date(AnomalyEvent.created_at).label("d"),
+        func.count(AnomalyEvent.id).label("total"),
+        func.count(AnomalyEvent.snapshot_path).label("with_evidence")
+    ).join(Camera, AnomalyEvent.camera_id == Camera.id).where(
+        AnomalyEvent.anomaly_type != "PERSON_DETECTED"
     )
+
+    if not is_admin:
+        date_q = date_q.where((AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id))
+
+    date_q = date_q.group_by("d").order_by(desc("d"))
+    result = await db.execute(date_q)
     rows = result.all()
     for d, total, with_evidence in rows:
         if d:
@@ -287,6 +316,208 @@ async def purge_expired_anomalies(retention_days: Optional[int] = None) -> int:
         pass
     return count
 
+@router.get("/export")
+async def export_anomalies(
+    format: str = Query("csv", pattern="^(csv|xlsx)$"),
+    camera_id: Optional[str] = Query(None, alias="cameraId"),
+    zone: Optional[str] = None,
+    anomaly_type: Optional[str] = Query(None, alias="anomalyType"),
+    status: Optional[str] = None,
+    date: Optional[str] = None,
+    date_from: Optional[datetime] = Query(None, alias="dateFrom"),
+    date_to: Optional[datetime] = Query(None, alias="dateTo"),
+    employee_id: Optional[str] = Query(None, alias="employeeId"),
+    order: Optional[str] = Query("desc", pattern="^(asc|desc)$"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Exports anomaly events directly from backend as CSV or styled Excel workbook.
+    All timestamps strictly formatted in Indian Standard Time (IST - Asia/Kolkata).
+    """
+    user_role = (getattr(user, "role", "") or "").upper()
+    is_admin = user_role in ("ADMINISTRATOR", "ADMIN", "FACILITY_MANAGER", "SECURITY_OFFICER")
+
+    query = select(
+        AnomalyEvent,
+        Camera.name.label("camera_name"),
+        Employee.name.label("employee_name")
+    ).join(
+        Camera, AnomalyEvent.camera_id == Camera.id
+    ).outerjoin(
+        Employee, AnomalyEvent.employee_id == Employee.id
+    ).where(
+        AnomalyEvent.anomaly_type != "PERSON_DETECTED"
+    )
+
+    if not is_admin:
+        query = query.where((AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id))
+
+    if camera_id:
+        query = query.where(AnomalyEvent.camera_id == camera_id)
+    if employee_id:
+        query = query.where(AnomalyEvent.employee_id == employee_id)
+    if zone and zone.upper() != "ALL":
+        query = query.where(AnomalyEvent.zone == zone.strip())
+    if anomaly_type and anomaly_type.upper() != "ALL":
+        query = query.where(AnomalyEvent.anomaly_type == anomaly_type.strip())
+    if status and status.upper() != "ALL":
+        if status.upper() == "NEW":
+            query = query.where(AnomalyEvent.status.in_(["NEW", "CONFIRMED"]))
+        else:
+            query = query.where(AnomalyEvent.status == status.strip().upper())
+
+    if date:
+        try:
+            parsed_date = datetime.strptime(date, "%Y-%m-%d").date()
+            start_dt = datetime.combine(parsed_date, time.min)
+            end_dt = datetime.combine(parsed_date, time.max)
+            query = query.where(AnomalyEvent.created_at >= start_dt, AnomalyEvent.created_at <= end_dt)
+        except ValueError:
+            pass
+
+    if date_from:
+        query = query.where(AnomalyEvent.created_at >= date_from)
+    if date_to:
+        query = query.where(AnomalyEvent.created_at <= date_to)
+
+    if order == "asc":
+        query = query.order_by(asc(AnomalyEvent.created_at))
+    else:
+        query = query.order_by(desc(AnomalyEvent.created_at))
+
+    query = query.limit(5000)
+    result = await db.execute(query)
+    rows = result.all()
+
+    now_ist_str = datetime.now(IST_TZ).strftime("%Y%m%d_%H%M%S")
+
+    if format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            "Incident ID",
+            "Date (IST)",
+            "Time (IST)",
+            "Camera",
+            "Zone",
+            "Violation Type",
+            "Staff / Person",
+            "Confidence",
+            "Severity",
+            "Status",
+            "Duration (s)",
+            "Track ID",
+            "Evidence Path"
+        ])
+        for evt, c_name, e_name in rows:
+            formatted = format_anomaly(evt, camera_name=c_name, employee_name=e_name)
+            writer.writerow([
+                formatted["id"],
+                formatted["confirmedDateIst"] or "--",
+                formatted["confirmedTimeIst"] or "--",
+                formatted["cameraName"] or formatted["cameraId"],
+                formatted["zone"] or "General",
+                formatted["anomalyType"],
+                formatted["employeeName"] or "Unidentified",
+                f"{round((formatted['confidence'] or 0) * 100)}%",
+                formatted["severity"],
+                formatted["status"],
+                f"{formatted['durationSeconds']:.1f}" if formatted['durationSeconds'] is not None else "--",
+                formatted["trackId"] if formatted["trackId"] is not None else "--",
+                formatted["snapshotPath"] or "None"
+            ])
+        output.seek(0)
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=anomalies_ist_{now_ist_str}.csv"
+            }
+        )
+
+    elif format == "xlsx":
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Anomalies Log (IST)"
+
+        headers = [
+            "Incident ID",
+            "Date (IST)",
+            "Time (IST)",
+            "Camera",
+            "Zone",
+            "Violation Type",
+            "Staff / Person",
+            "Confidence",
+            "Severity",
+            "Status",
+            "Duration (s)",
+            "Track ID",
+            "Evidence Path"
+        ]
+        ws.append(headers)
+
+        header_font = Font(bold=True, color="FFFFFF", name="Segoe UI", size=11)
+        header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+        header_align = Alignment(horizontal="center", vertical="center")
+
+        thin_side = Side(border_style="thin", color="CBD5E1")
+        border = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
+
+        for col_num in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_num)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+            cell.border = border
+            ws.row_dimensions[1].height = 24
+
+        row_font = Font(name="Segoe UI", size=10)
+        for row_idx, (evt, c_name, e_name) in enumerate(rows, start=2):
+            formatted = format_anomaly(evt, camera_name=c_name, employee_name=e_name)
+            ws.append([
+                formatted["id"],
+                formatted["confirmedDateIst"] or "--",
+                formatted["confirmedTimeIst"] or "--",
+                formatted["cameraName"] or formatted["cameraId"],
+                formatted["zone"] or "General",
+                formatted["anomalyType"],
+                formatted["employeeName"] or "Unidentified",
+                f"{round((formatted['confidence'] or 0) * 100)}%",
+                formatted["severity"],
+                formatted["status"],
+                f"{formatted['durationSeconds']:.1f}" if formatted['durationSeconds'] is not None else "--",
+                formatted["trackId"] if formatted["trackId"] is not None else "--",
+                formatted["snapshotPath"] or "None"
+            ])
+            for c_idx in range(1, len(headers) + 1):
+                c = ws.cell(row=row_idx, column=c_idx)
+                c.font = row_font
+                c.border = border
+                if c_idx in (2, 3, 8, 9, 10, 11, 12):
+                    c.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Auto column width
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or "")) for cell in col)
+            col_letter = openpyxl.utils.get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 45)
+
+        stream = io.BytesIO()
+        wb.save(stream)
+        stream.seek(0)
+        return Response(
+            content=stream.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename=anomalies_ist_{now_ist_str}.xlsx"
+            }
+        )
+
 @router.get("/{id}/evidence")
 async def get_anomaly_evidence(
     id: str,
@@ -314,7 +545,9 @@ async def get_anomaly_evidence(
     evt, cam_user_id = row
 
     # Enforce user privacy isolation
-    if getattr(req_user, "role", None) != "Administrator":
+    user_role = (getattr(req_user, "role", "") or "").upper()
+    is_admin = user_role in ("ADMINISTRATOR", "ADMIN", "FACILITY_MANAGER", "SECURITY_OFFICER")
+    if not is_admin:
         if evt.user_id and evt.user_id != req_user.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: photo belongs to another user.")
         if not evt.user_id and cam_user_id and cam_user_id != req_user.id:
