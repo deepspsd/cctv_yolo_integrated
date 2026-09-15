@@ -112,7 +112,7 @@ export const anomalyService = {
   async exportAnomalies(format: 'csv' | 'xlsx' = 'csv', filters: AnomalyFilters = {}): Promise<void> {
     const params = new URLSearchParams();
     params.append('format', format);
-    if (filters.cameraId) params.append('cameraId', filters.cameraId);
+    if (filters.cameraId && filters.cameraId !== 'ALL') params.append('cameraId', filters.cameraId);
     if (filters.zone && filters.zone !== 'ALL') params.append('zone', filters.zone);
     if (filters.anomalyType && filters.anomalyType !== 'ALL') params.append('anomalyType', filters.anomalyType);
     if (filters.status && filters.status !== 'ALL') params.append('status', filters.status);
@@ -123,6 +123,7 @@ export const anomalyService = {
 
     const qs = params.toString();
     const res = await apiFetch(`/anomalies/export?${qs}`);
+
     if (!res.ok) {
       throw new Error(`Export failed: ${res.statusText}`);
     }

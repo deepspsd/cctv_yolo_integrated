@@ -36,7 +36,6 @@ import {
   User,
   CameraOff,
   Download,
-  FileSpreadsheet,
 } from 'lucide-react';
 import { AnomalyAlertEvent, Camera } from '../types';
 import { anomalyService } from '../services/anomalyService';
@@ -1729,53 +1728,6 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             <div className="hidden sm:flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-mono font-medium text-emerald-600 dark:text-emerald-400 shadow-xs">
               <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
               <span>LIVE AI MONITORING ACTIVE</span>
-            </div>
-
-            {/* Export Dropdown / Buttons */}
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={async () => {
-                  try {
-                    soundService.playTactileBlip(700, 0.02);
-                    await anomalyService.exportAnomalies('csv', {
-                      cameraId: selectedCamera,
-                      zone: selectedZone,
-                      anomalyType: selectedType,
-                      status: selectedStatus,
-                      date: selectedDate,
-                    });
-                  } catch (e) {
-                    alert('Export failed: ' + (e instanceof Error ? e.message : String(e)));
-                  }
-                }}
-                className="flex items-center gap-1.5 rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 transition hover:bg-black/[0.06] dark:hover:bg-white/10 cursor-pointer"
-                title="Export filtered anomalies to CSV with Indian Standard Time (IST)"
-              >
-                <Download className="h-3.5 w-3.5 text-amber-500" />
-                <span>CSV</span>
-              </button>
-
-              <button
-                onClick={async () => {
-                  try {
-                    soundService.playTactileBlip(700, 0.02);
-                    await anomalyService.exportAnomalies('xlsx', {
-                      cameraId: selectedCamera,
-                      zone: selectedZone,
-                      anomalyType: selectedType,
-                      status: selectedStatus,
-                      date: selectedDate,
-                    });
-                  } catch (e) {
-                    alert('Export failed: ' + (e instanceof Error ? e.message : String(e)));
-                  }
-                }}
-                className="flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 px-3 py-2 text-xs font-semibold text-emerald-600 dark:text-emerald-400 transition cursor-pointer"
-                title="Export filtered anomalies to Excel spreadsheet with Indian Standard Time (IST)"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-500" />
-                <span>Excel</span>
-              </button>
             </div>
 
             {onRefresh && (
