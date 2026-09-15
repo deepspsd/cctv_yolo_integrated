@@ -1869,12 +1869,15 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             >
               <span>Alerts & Evidence</span>
               {summary.unresolved > 0 ? (
-                <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-500 border border-amber-500/30">
-                  {summary.unresolved} Pending
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-normal font-sans bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 shadow-xs">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  <span className="font-semibold tabular-nums">{summary.unresolved.toLocaleString()}</span>
+                  <span>Pending</span>
                 </span>
               ) : (
-                <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
-                  All Resolved ✓
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-normal font-sans bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 shadow-xs">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  <span>All Resolved ✓</span>
                 </span>
               )}
             </h1>
