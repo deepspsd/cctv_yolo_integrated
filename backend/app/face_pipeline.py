@@ -207,7 +207,7 @@ class FacePipeline:
     def extract_face_region(self, person_crop: np.ndarray) -> Optional[np.ndarray]:
         """
         Isolates face/head region from person bounding box.
-        In CCTV footage, head occupies the top 15% - 35% of person height.
+        Adapts head height based on person aspect ratio to handle standing vs sitting/bending.
         """
         if person_crop is None or person_crop.size == 0:
             return None
@@ -215,12 +215,23 @@ class FacePipeline:
         if ph < 40 or pw < 20:
             return None
 
-        # Take upper 32% of body, centered horizontally with 15% side margins
-        head_h = max(28, int(ph * 0.32))
-        x_start = int(pw * 0.15)
-        x_end = max(x_start + 24, int(pw * 0.85))
-        face_crop = person_crop[0:head_h, x_start:x_end]
+        aspect = float(pw) / float(ph)
+        # For heavily horizontal or occluded boxes (aspect > 1.25), reject face isolation
+        if aspect > 1.25:
+            return None
 
+        # Standard standing human aspect ratio is ~0.35 - 0.55
+        if aspect <= 0.65:
+            head_h = max(28, int(ph * 0.32))
+            x_start = int(pw * 0.15)
+            x_end = max(x_start + 24, int(pw * 0.85))
+        else:
+            # Crouching / seated: head occupies smaller vertical proportion of wider box
+            head_h = max(24, int(ph * 0.25))
+            x_start = int(pw * 0.20)
+            x_end = max(x_start + 20, int(pw * 0.80))
+
+        face_crop = person_crop[0:head_h, x_start:x_end]
         if face_crop.size == 0 or face_crop.shape[0] < 16 or face_crop.shape[1] < 16:
             return None
         return face_crop

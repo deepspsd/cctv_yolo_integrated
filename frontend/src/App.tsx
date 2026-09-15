@@ -6,20 +6,22 @@ import { anomalyService } from './services/anomalyService';
 import { Navbar } from './components/Navbar';
 import { LoginPage } from './components/LoginPage';
 import { RegisterPage } from './components/RegisterPage';
-import { AlertsPage } from './components/AlertsPage';
-import { AttendancePage } from './components/AttendancePage';
-import { EmployeesPage } from './components/EmployeesPage';
 import { CameraSummaryCards } from './components/CameraSummaryCards';
 import { CameraControls } from './components/CameraControls';
 import { CameraTable } from './components/CameraTable';
-import { CameraViewerDrawer } from './components/CameraViewerDrawer';
-import { AddEditCameraModal } from './components/AddEditCameraModal';
 import { DeleteCameraDialog } from './components/DeleteCameraDialog';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { FacilityZonesModal } from './components/FacilityZonesModal';
 import { GatewayStatusModal } from './components/GatewayStatusModal';
 import { CameraLoadingSkeleton } from './components/CameraLoadingSkeleton';
 import { CameraEmptyState } from './components/CameraEmptyState';
+
+// Route-level code-splitting for heavy pages and modals
+const AlertsPage = React.lazy(() => import('./components/AlertsPage').then(m => ({ default: m.AlertsPage })));
+const AttendancePage = React.lazy(() => import('./components/AttendancePage').then(m => ({ default: m.AttendancePage })));
+const EmployeesPage = React.lazy(() => import('./components/EmployeesPage').then(m => ({ default: m.EmployeesPage })));
+const CameraViewerDrawer = React.lazy(() => import('./components/CameraViewerDrawer').then(m => ({ default: m.CameraViewerDrawer })));
+const AddEditCameraModal = React.lazy(() => import('./components/AddEditCameraModal').then(m => ({ default: m.AddEditCameraModal })));
 import { ToastContainer } from './components/ToastContainer';
 import { DecorativeCurvedLines } from './components/DecorativeCurvedLines';
 import { MarqueeTicker } from './components/MarqueeTicker';
@@ -648,6 +650,7 @@ export default function App() {
             : 'max-w-[1240px] px-4 sm:px-8 pt-24 sm:pt-26 pb-12'
         }`}
       >
+        <React.Suspense fallback={<CameraLoadingSkeleton />}>
         {currentView === 'login' ? (
           <LoginPage
             onSuccess={handleLoginSuccess}
@@ -833,30 +836,33 @@ export default function App() {
             )}
           </>
         )}
+        </React.Suspense>
       </main>
 
-      {/* On-Demand Live Viewer Drawer with next/prev camera cycling */}
-      <CameraViewerDrawer
-        camera={selectedCamera}
-        isOpen={isViewerOpen}
-        onClose={handleCloseViewer}
-        onSnapshotTaken={(cameraName) =>
-          addToast(`Snapshot saved for ${cameraName}`, 'success')
-        }
-        onNextCamera={handleNextCamera}
-        onPrevCamera={handlePrevCamera}
-        hasNextCamera={filteredCameras.length > 1}
-        hasPrevCamera={filteredCameras.length > 1}
-      />
+      {/* On-Demand Live Viewer Drawer & Modals with Suspense fallback */}
+      <React.Suspense fallback={null}>
+        <CameraViewerDrawer
+          camera={selectedCamera}
+          isOpen={isViewerOpen}
+          onClose={handleCloseViewer}
+          onSnapshotTaken={(cameraName) =>
+            addToast(`Snapshot saved for ${cameraName}`, 'success')
+          }
+          onNextCamera={handleNextCamera}
+          onPrevCamera={handlePrevCamera}
+          hasNextCamera={filteredCameras.length > 1}
+          hasPrevCamera={filteredCameras.length > 1}
+        />
 
-      {/* Add / Edit Camera Modal (Requirement 4 & 5) */}
-      <AddEditCameraModal
-        isOpen={isAddEditOpen}
-        onClose={() => setIsAddEditOpen(false)}
-        cameraToEdit={cameraToEdit}
-        existingZones={availableZones}
-        onSaveCamera={handleSaveCamera}
-      />
+        {/* Add / Edit Camera Modal (Requirement 4 & 5) */}
+        <AddEditCameraModal
+          isOpen={isAddEditOpen}
+          onClose={() => setIsAddEditOpen(false)}
+          cameraToEdit={cameraToEdit}
+          existingZones={availableZones}
+          onSaveCamera={handleSaveCamera}
+        />
+      </React.Suspense>
 
       {/* Delete Confirmation Dialog (Requirement 6) */}
       <DeleteCameraDialog

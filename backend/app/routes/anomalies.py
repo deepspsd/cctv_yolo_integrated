@@ -1,4 +1,4 @@
-from datetime import datetime, timezone, time
+from datetime import datetime, timezone, time, timedelta
 from typing import Optional, List
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
@@ -7,12 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, asc
 from jose import JWTError
 
-from app.database import get_db
+from app.database import get_db, AsyncSessionLocal
 from app.models import AnomalyEvent, Camera, User, Employee
 from app.dependencies import get_current_user
 from app.auth import decode_access_token
 from app.security import decrypt_bytes
 from app.schemas import AnomalyEventResponse, AnomalyStatusUpdate
+from app.config import settings
 
 router = APIRouter(
     prefix="/anomalies",
@@ -257,6 +258,35 @@ async def list_evidence_dates(
     sorted_dates = sorted(dates_map.values(), key=lambda x: x["date"], reverse=True)
     return sorted_dates
 
+async def purge_expired_anomalies(retention_days: Optional[int] = None) -> int:
+    """
+    Purges anomaly events and associated physical evidence older than retention_days.
+    Follows Privacy-by-Design storage limitation principles (GDPR / DPDP).
+    """
+    days = retention_days or getattr(settings, "EVIDENCE_RETENTION_DAYS", 90)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    count = 0
+    try:
+        async with AsyncSessionLocal() as db:
+            query = select(AnomalyEvent).where(AnomalyEvent.created_at < cutoff)
+            res = await db.execute(query)
+            expired = res.scalars().all()
+            for evt in expired:
+                if evt.snapshot_path:
+                    try:
+                        p = Path(evt.snapshot_path)
+                        if p.is_file():
+                            p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                await db.delete(evt)
+                count += 1
+            if count > 0:
+                await db.commit()
+    except Exception:
+        pass
+    return count
+
 @router.get("/{id}/evidence")
 async def get_anomaly_evidence(
     id: str,
@@ -268,11 +298,7 @@ async def get_anomaly_evidence(
     Stream evidence snapshot securely from local backend storage.
     Enforces strict user isolation: only owner or administrator can view photo.
     """
-    req_user = None
-    try:
-        req_user = await authenticate_request(request, token_param=token, db=db)
-    except Exception:
-        pass
+    req_user = await authenticate_request(request, token_param=token, db=db)
 
     query = select(AnomalyEvent, Camera.user_id.label("camera_user_id")).join(
         Camera, AnomalyEvent.camera_id == Camera.id
@@ -288,7 +314,7 @@ async def get_anomaly_evidence(
     evt, cam_user_id = row
 
     # Enforce user privacy isolation
-    if req_user and getattr(req_user, "role", None) != "Administrator":
+    if getattr(req_user, "role", None) != "Administrator":
         if evt.user_id and evt.user_id != req_user.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: photo belongs to another user.")
         if not evt.user_id and cam_user_id and cam_user_id != req_user.id:

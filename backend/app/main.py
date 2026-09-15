@@ -18,7 +18,6 @@ from app.attendance_service import attendance_service
 from app.health_manager import health_manager
 from app.ai_engine import ai_engine
 from app.websocket_manager import ws_manager
-from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 # Logging setup
@@ -79,10 +78,38 @@ async def lifespan(app: FastAPI):
     # Start asynchronous low-load AI inference engine (YOLOv8 + PPE)
     ai_engine.start()
 
+    # Start periodic attendance absence finalizer and data retention loops
+    bg_tasks_running = True
+
+    async def _attendance_absence_loop():
+        while bg_tasks_running:
+            try:
+                await attendance_service.finalize_absent_clockouts()
+            except Exception as e:
+                logger.debug(f"Attendance absence check error: {e}")
+            await asyncio.sleep(60.0)
+
+    async def _retention_cleanup_loop():
+        from app.routes.anomalies import purge_expired_anomalies
+        while bg_tasks_running:
+            try:
+                purged = await purge_expired_anomalies()
+                if purged > 0:
+                    logger.info(f"Privacy retention: purged {purged} expired anomaly events.")
+            except Exception as e:
+                logger.debug(f"Retention cleanup error: {e}")
+            await asyncio.sleep(3600.0)
+
+    absence_task = asyncio.create_task(_attendance_absence_loop())
+    retention_task = asyncio.create_task(_retention_cleanup_loop())
+
     yield
 
     # Shutdown
     logger.info("Shutting down background tasks...")
+    bg_tasks_running = False
+    absence_task.cancel()
+    retention_task.cancel()
     await ai_engine.stop()
     await health_manager.stop()
     await engine.dispose()
@@ -115,11 +142,6 @@ app.include_router(ai_router, prefix=settings.API_V1_STR)
 app.include_router(anomalies_router, prefix=settings.API_V1_STR)
 app.include_router(employees_router, prefix=settings.API_V1_STR)
 app.include_router(attendance_router, prefix=settings.API_V1_STR)
-
-# Mount evidence snapshots directory for local inspection
-evidence_dir = Path(settings.AI_EVIDENCE_DIR)
-evidence_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/data/evidence", StaticFiles(directory=str(evidence_dir)), name="evidence")
 
 
 # Real-time WebSocket endpoint — token validated via ?token= query param

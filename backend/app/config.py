@@ -9,8 +9,8 @@ class Settings(BaseSettings):
     PORT: int = int(os.getenv("PORT", "5000"))
 
     # Database Configuration
-    CAMERA_DB_PATH: str = os.getenv("CAMERA_DB_PATH", "./data/cameras.db")
-    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{os.getenv('CAMERA_DB_PATH', './data/cameras.db')}")
+    CAMERA_DB_PATH: str = os.getenv("CAMERA_DB_PATH", "./cctv.db")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{os.getenv('CAMERA_DB_PATH', './cctv.db')}")
 
     # Secret Key for AES-GCM credential encryption (32 bytes)
     CAMERA_SECRET_KEY: str = os.getenv(
