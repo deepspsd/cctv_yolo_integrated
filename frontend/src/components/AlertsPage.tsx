@@ -138,6 +138,28 @@ const getStatusBadge = (status: string) => {
   }
 };
 
+const getLocalDateKey = (d: Date = new Date()): string => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const getAdjacentDateKey = (currentDateKey: string, offsetDays: number): string => {
+  if (!currentDateKey) currentDateKey = getLocalDateKey();
+  const parts = currentDateKey.split('-');
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    const dateObj = new Date(y, m, d + offsetDays);
+    return getLocalDateKey(dateObj);
+  }
+  const dateObj = new Date();
+  dateObj.setDate(dateObj.getDate() + offsetDays);
+  return getLocalDateKey(dateObj);
+};
+
 const parseDateKey = (iso?: string | null): string => {
   if (!iso) return '';
   const match = String(iso).match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
@@ -146,10 +168,7 @@ const parseDateKey = (iso?: string | null): string => {
   }
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return String(iso).slice(0, 10);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return getLocalDateKey(d);
 };
 
 const getAlertDateKeys = (iso?: string | null): string[] => {
@@ -982,15 +1001,23 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
   // Locally deleted incident IDs for instant reactive feedback
   const [deletedAlertIds, setDeletedAlertIds] = useState<Set<string>>(new Set());
 
-  // Filters State
+  // Today & Yesterday Local Date Keys
+  const todayKey = useMemo(() => getLocalDateKey(new Date()), []);
+  const yesterdayKey = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return getLocalDateKey(d);
+  }, []);
+
+  // Filters State - Default strictly to TODAY so only today's anomalies are shown by default
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCamera, setSelectedCamera] = useState('ALL');
   const [selectedZone, setSelectedZone] = useState('ALL');
   const [selectedType, setSelectedType] = useState('ALL');
   const [selectedSeverity, setSelectedSeverity] = useState('ALL');
   const [selectedStatus, setSelectedStatus] = useState('ALL');
-  const [selectedDate, setSelectedDate] = useState<string>(''); // YYYY-MM-DD
-  const [datePreset, setDatePreset] = useState<'ALL' | 'TODAY' | 'YESTERDAY' | 'CUSTOM'>('ALL');
+  const [selectedDate, setSelectedDate] = useState<string>(() => getLocalDateKey(new Date())); // YYYY-MM-DD (Defaults to Today)
+  const [datePreset, setDatePreset] = useState<'ALL' | 'TODAY' | 'YESTERDAY' | 'CUSTOM'>('TODAY');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc' | 'severity' | 'confidence'>('desc');
   const [viewMode, setViewMode] = useState<'byCamera' | 'grid' | 'table'>('byCamera');
   const [evidenceOnly, setEvidenceOnly] = useState<boolean>(false); // default show all alerts
@@ -1118,18 +1145,6 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     };
   }, []);
 
-  // Today & Yesterday ISO strings
-  const todayKey = useMemo(() => {
-    const d = new Date();
-    return parseDateKey(d.toISOString());
-  }, []);
-
-  const yesterdayKey = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return parseDateKey(d.toISOString());
-  }, []);
-
   // Handle Date Preset Buttons
   const handleDatePreset = (preset: 'ALL' | 'TODAY' | 'YESTERDAY' | 'CUSTOM') => {
     setDatePreset(preset);
@@ -1141,6 +1156,23 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
       setSelectedDate('');
     }
   };
+
+  // Day Stepper Helpers
+  const handlePrevDay = useCallback(() => {
+    soundService.playTactileBlip(650, 0.02);
+    const current = selectedDate || todayKey;
+    const prev = getAdjacentDateKey(current, -1);
+    setSelectedDate(prev);
+    setDatePreset(prev === yesterdayKey ? 'YESTERDAY' : prev === todayKey ? 'TODAY' : 'CUSTOM');
+  }, [selectedDate, todayKey, yesterdayKey]);
+
+  const handleNextDay = useCallback(() => {
+    if (!selectedDate || selectedDate >= todayKey) return;
+    soundService.playTactileBlip(750, 0.02);
+    const next = getAdjacentDateKey(selectedDate, 1);
+    setSelectedDate(next);
+    setDatePreset(next === todayKey ? 'TODAY' : next === yesterdayKey ? 'YESTERDAY' : 'CUSTOM');
+  }, [selectedDate, todayKey, yesterdayKey]);
 
   // ─── Interactive Calendar Popover State & Helpers ───────────────────────────
   const [isCalendarOpen, setIsCalendarOpen] = useState<boolean>(false);
@@ -1487,9 +1519,9 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     selectedType !== 'ALL' ||
     selectedSeverity !== 'ALL' ||
     selectedStatus !== 'ALL' ||
-    Boolean(selectedDate) ||
+    selectedDate !== todayKey ||
     Boolean(searchQuery) ||
-    !evidenceOnly;
+    evidenceOnly;
 
   const resetFilters = () => {
     setSelectedCamera('ALL');
@@ -1497,10 +1529,10 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     setSelectedType('ALL');
     setSelectedSeverity('ALL');
     setSelectedStatus('ALL');
-    setSelectedDate('');
-    setDatePreset('ALL');
+    setSelectedDate(todayKey);
+    setDatePreset('TODAY');
     setSearchQuery('');
-    setEvidenceOnly(true);
+    setEvidenceOnly(false);
   };
 
   return (
@@ -1766,8 +1798,18 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             )}
           </div>
 
-          {/* Awesome Interactive Calendar Component */}
-          <div className="flex items-center gap-1.5">
+          {/* Day Stepper & Interactive Calendar Component */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {/* Previous Day Stepper (<) */}
+            <button
+              type="button"
+              onClick={handlePrevDay}
+              className="flex h-9 w-9 items-center justify-center rounded-xl border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-[#090b10] text-slate-700 dark:text-slate-300 hover:border-orange-500/40 hover:bg-orange-500/10 hover:text-orange-500 dark:hover:text-orange-400 transition cursor-pointer shadow-xs"
+              title="Previous Day (Navigate earlier date)"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+
             <div className="relative" ref={calendarRef}>
               <button
                 type="button"
@@ -1783,8 +1825,14 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
                 title="Open Incident Calendar"
               >
                 <CalendarDays className={`h-4 w-4 shrink-0 ${selectedDate ? 'text-orange-500' : 'text-slate-400'}`} />
-                <span className="tracking-tight select-none">
-                  {selectedDate ? formatRegisteredDate(selectedDate) : 'Select Date'}
+                <span className="tracking-tight select-none font-medium">
+                  {selectedDate === todayKey
+                    ? `Today, ${formatRegisteredDate(selectedDate)}`
+                    : selectedDate === yesterdayKey
+                    ? `Yesterday, ${formatRegisteredDate(selectedDate)}`
+                    : selectedDate
+                    ? formatRegisteredDate(selectedDate)
+                    : 'All Dates (History)'}
                 </span>
 
                 {/* Day Incident Count Badge */}
@@ -2017,26 +2065,55 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
               )}
             </div>
 
-            {/* Quick Today Toggle */}
+            {/* Next Day Stepper (>) */}
+            <button
+              type="button"
+              disabled={Boolean(!selectedDate || selectedDate >= todayKey)}
+              onClick={handleNextDay}
+              className="flex h-9 w-9 items-center justify-center rounded-xl border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-[#090b10] text-slate-700 dark:text-slate-300 hover:border-orange-500/40 hover:bg-orange-500/10 hover:text-orange-500 dark:hover:text-orange-400 transition cursor-pointer shadow-xs disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:border-black/10 dark:disabled:hover:border-white/10 dark:disabled:hover:bg-[#090b10] dark:disabled:hover:text-slate-300"
+              title={selectedDate && selectedDate >= todayKey ? 'Current day (Cannot navigate to future)' : 'Next Day'}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+
+            {/* Quick Today Button */}
             <button
               type="button"
               onClick={() => {
                 soundService.playTactileBlip(750, 0.02);
-                if (selectedDate === todayKey) {
-                  setSelectedDate('');
-                  setDatePreset('ALL');
-                } else {
-                  setSelectedDate(todayKey);
-                  setDatePreset('TODAY');
-                }
+                setSelectedDate(todayKey);
+                setDatePreset('TODAY');
               }}
-              className={`rounded-xl border px-3 py-2 text-xs font-semibold transition cursor-pointer ${
+              className={`rounded-xl border px-3 py-2 text-xs font-semibold transition cursor-pointer shadow-xs ${
                 selectedDate === todayKey
-                  ? 'border-[#f97316] bg-[#f97316] text-white shadow-xs font-bold'
+                  ? 'border-[#f97316] bg-[#f97316] text-white font-bold'
                   : 'border-black/10 dark:border-white/10 bg-slate-50 dark:bg-[#090b10] text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               Today
+            </button>
+
+            {/* All Dates History Toggle */}
+            <button
+              type="button"
+              onClick={() => {
+                soundService.playTactileBlip(700, 0.02);
+                if (selectedDate === '') {
+                  setSelectedDate(todayKey);
+                  setDatePreset('TODAY');
+                } else {
+                  setSelectedDate('');
+                  setDatePreset('ALL');
+                }
+              }}
+              className={`rounded-xl border px-3 py-2 text-xs font-semibold transition cursor-pointer shadow-xs ${
+                selectedDate === ''
+                  ? 'border-amber-500/50 bg-amber-500/15 text-amber-500 dark:text-amber-400 font-bold ring-1 ring-amber-500/30'
+                  : 'border-black/10 dark:border-white/10 bg-slate-50 dark:bg-[#090b10] text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+              title="Show all recorded history across all dates"
+            >
+              All Dates
             </button>
           </div>
 
@@ -2257,19 +2334,47 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             <FileSearch className="h-7 w-7" />
           </div>
           <h3 className="mt-4 text-base font-bold text-slate-800 dark:text-slate-200">
-            {selectedDate
-              ? 'No violations recorded on this date.'
+            {selectedDate === todayKey
+              ? 'No violations recorded today.'
+              : selectedDate
+              ? `No violations recorded on ${formatRegisteredDate(selectedDate)}.`
               : 'No alerts found.'}
           </h3>
           <p className="mt-1 text-xs text-slate-500 max-w-md">
-            {selectedDate
-              ? `No anomalous events matched the date ${formatRegisteredDate(selectedDate)}. Select another date from the ribbon or clear filters.`
+            {selectedDate === todayKey
+              ? `All monitored cameras are currently compliant for today (${formatRegisteredDate(todayKey)}). Zero safety hazards detected.`
+              : selectedDate
+              ? `No anomalous events matched ${formatRegisteredDate(selectedDate)}. Navigate through previous dates or jump to recent incidents.`
               : 'No alerts match your current filter criteria. Try adjusting or clearing your filters.'}
           </p>
+
+          {/* If looking at today and no alerts, provide 1-click jump to latest incident date! */}
+          {availableDateOptions.length > 0 && selectedDate === todayKey && (
+            <div className="mt-4 flex flex-col items-center gap-2">
+              <span className="text-[11px] font-mono text-slate-400">
+                Previous incident date detected in system:
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  soundService.playTactileBlip(800, 0.02);
+                  setSelectedDate(availableDateOptions[0].date);
+                  setDatePreset('CUSTOM');
+                }}
+                className="flex items-center gap-2 rounded-xl border border-orange-500/40 bg-orange-500/10 hover:bg-orange-500/20 text-orange-400 px-4 py-2 text-xs font-semibold transition cursor-pointer shadow-xs"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-orange-400" />
+                <span>
+                  View Recent Incidents: {formatRegisteredDate(availableDateOptions[0].date)} ({availableDateOptions[0].totalAlerts} incidents)
+                </span>
+              </button>
+            </div>
+          )}
+
           {hasActiveFilters && (
             <button
               onClick={resetFilters}
-              className="mt-4 rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.05] dark:bg-white/[0.08] px-4 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-black/10 dark:hover:bg-white/15"
+              className="mt-4 rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.05] dark:bg-white/[0.08] px-4 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-black/10 dark:hover:bg-white/15 cursor-pointer"
             >
               Reset All Filters
             </button>
