@@ -218,8 +218,7 @@ class AiInferenceEngine:
                     verbose=False,
                     conf=settings.AI_DEFAULT_CONFIDENCE,
                     imgsz=settings.AI_IMAGE_SIZE,
-                    device=self.scheduler.device,
-                    half=self.scheduler.use_fp16
+                    device=self.scheduler.device
                 )
                 if not slot:
                     slot = CameraAiSlot(camera_id, camera_code, "Live", settings.AI_DEFAULT_FPS)
@@ -262,8 +261,7 @@ class AiInferenceEngine:
                 verbose=False,
                 conf=settings.AI_DEFAULT_CONFIDENCE,
                 imgsz=settings.AI_IMAGE_SIZE,
-                device=self.scheduler.device,
-                half=self.scheduler.use_fp16
+                device=self.scheduler.device
             )
             if not slot:
                 slot = CameraAiSlot(camera_id, camera_id, "Zone", settings.AI_DEFAULT_FPS)

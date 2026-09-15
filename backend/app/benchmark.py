@@ -65,9 +65,8 @@ def run_camera_benchmark(camera_counts: List[int] = [1, 5, 10, 20], test_duratio
     print(f"Unavailable Rules: {disc_summary['unavailable_rules']}")
     print("-" * 80)
 
-    # Warmup
     dummy = [np.zeros((360, 640, 3), dtype=np.uint8) for _ in range(settings.AI_BATCH_SIZE)]
-    model(dummy, verbose=False, device=device, half=use_fp16)
+    model(dummy, verbose=False, device=device)
 
     results_table = []
 
@@ -118,7 +117,7 @@ def run_camera_benchmark(camera_counts: List[int] = [1, 5, 10, 20], test_duratio
             batch = [test_frames[idx] for idx in batch_idxs]
 
             t0 = time.perf_counter()
-            _ = model(batch, verbose=False, device=device, half=use_fp16)
+            _ = model(batch, verbose=False, device=device)
             t1 = time.perf_counter()
 
             total_lat = (t1 - t0) * 1000.0

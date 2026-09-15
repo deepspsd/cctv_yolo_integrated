@@ -187,8 +187,7 @@ async def test_ai_model():
         test_frame,
         verbose=False,
         conf=0.3,
-        device=scheduler.device,
-        half=scheduler.use_fp16
+        device=scheduler.device
     )
     t1 = time.perf_counter()
     latency_ms = round((t1 - t0) * 1000.0, 2)

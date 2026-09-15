@@ -191,18 +191,44 @@ class FairMultiCameraScheduler:
             else:
                 self.model = YOLO(str(model_path))
 
+            if self.device == "cuda":
+                try:
+                    self.model.to("cuda")
+                    if self.use_fp16:
+                        self.model.model.half()
+                except Exception as cuda_init_err:
+                    logger.warning(f"Model CUDA transfer warning: {cuda_init_err}")
+
             # Warmup pass
             dummy = np.zeros((360, 640, 3), dtype=np.uint8)
-            self.model(dummy, verbose=False, device=self.device, half=self.use_fp16)
+            self.model(dummy, verbose=False, device=self.device)
 
             # Discover dynamic class mappings
             rule_registry.discover_classes(self.model)
 
             self.model_loaded = True
             self.model_load_error = None
-            logger.info("Shared YOLO model loaded and validated successfully.")
+            logger.info(f"Shared YOLO model loaded and validated successfully on {self.device.upper()}.")
             return True
         except Exception as e:
+            if self.device == "cuda":
+                logger.warning(f"CUDA initialization failed ({e}). Automatically falling back to CPU...")
+                try:
+                    self.device = "cpu"
+                    self.use_fp16 = False
+                    if not model_path.exists():
+                        self.model = YOLO("ppe.pt")
+                    else:
+                        self.model = YOLO(str(model_path))
+                    dummy = np.zeros((360, 640, 3), dtype=np.uint8)
+                    self.model(dummy, verbose=False, device=self.device)
+                    rule_registry.discover_classes(self.model)
+                    self.model_loaded = True
+                    self.model_load_error = None
+                    logger.info("Shared YOLO model initialized successfully with CPU fallback.")
+                    return True
+                except Exception as cpu_err:
+                    logger.error(f"CPU fallback also failed: {cpu_err}", exc_info=True)
             self.model_loaded = False
             self.model_load_error = str(e)
             logger.error(f"Failed to load shared YOLO model: {e}", exc_info=True)
@@ -414,8 +440,7 @@ class FairMultiCameraScheduler:
                     verbose=False,
                     conf=min(s.confidence_threshold for s in batch_slots),
                     imgsz=max(s.image_size for s in batch_slots),
-                    device=self.device,
-                    half=self.use_fp16
+                    device=self.device
                 )
                 t_end = time.perf_counter()
                 total_latency_ms = (t_end - t_start) * 1000.0
@@ -434,6 +459,15 @@ class FairMultiCameraScheduler:
 
             except Exception as e:
                 logger.error(f"Error during batched AI inference: {e}", exc_info=True)
+                # If CUDA runtime error occurs, automatically downgrade to CPU to preserve uptime
+                if self.device == "cuda" and any(k in str(e).lower() for k in ["cuda", "out of memory", "cudnn"]):
+                    logger.warning(f"CUDA runtime error encountered ({e}). Downgrading AI scheduler device to CPU...")
+                    self.device = "cpu"
+                    self.use_fp16 = False
+                    try:
+                        self.model.to("cpu")
+                    except Exception:
+                        pass
                 # Drop failed batch frames. Never retry stale frames indefinitely.
                 for slot in batch_slots:
                     slot.last_error = str(e)

@@ -27,7 +27,7 @@ def test_ai_engine_frame_inference():
     scheduler.register_camera(cam_id, cam_code, "Zone Test", "rtsp://localhost:8554/test", target_fps=5)
     slot = scheduler.slots[cam_id]
 
-    results = scheduler.model(test_frame, verbose=False, device=scheduler.device, half=scheduler.use_fp16)
+    results = scheduler.model(test_frame, verbose=False, device=scheduler.device)
     scheduler._process_single_camera_result(slot, test_frame, results[0])
 
     state = ai_engine.get_camera_ai_state(cam_id)
