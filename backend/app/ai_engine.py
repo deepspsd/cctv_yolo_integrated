@@ -220,10 +220,25 @@ class AiInferenceEngine:
                     imgsz=settings.AI_IMAGE_SIZE,
                     device=self.scheduler.device
                 )
+
+                phone_res = None
+                if self.scheduler.phone_model:
+                    try:
+                        p_results = self.scheduler.phone_model(
+                            frame,
+                            verbose=False,
+                            conf=settings.AI_DEFAULT_CONFIDENCE,
+                            imgsz=settings.AI_IMAGE_SIZE,
+                            device=self.scheduler.device
+                        )
+                        phone_res = p_results[0] if p_results else None
+                    except Exception as pe:
+                        logger.warning(f"Error in b64 phone inference: {pe}")
+
                 if not slot:
                     slot = CameraAiSlot(camera_id, camera_code, "Live", settings.AI_DEFAULT_FPS)
                 
-                self.scheduler._process_single_camera_result(slot, frame, results[0])
+                self.scheduler._process_single_camera_result(slot, frame, results[0], phone_res=phone_res)
                 return slot.latest_state
 
         except Exception as e:
@@ -263,9 +278,24 @@ class AiInferenceEngine:
                 imgsz=settings.AI_IMAGE_SIZE,
                 device=self.scheduler.device
             )
+
+            phone_res = None
+            if self.scheduler.phone_model:
+                try:
+                    p_results = self.scheduler.phone_model(
+                        frame,
+                        verbose=False,
+                        conf=settings.AI_DEFAULT_CONFIDENCE,
+                        imgsz=settings.AI_IMAGE_SIZE,
+                        device=self.scheduler.device
+                    )
+                    phone_res = p_results[0] if p_results else None
+                except Exception as pe:
+                    logger.warning(f"Error in on-demand phone inference: {pe}")
+
             if not slot:
                 slot = CameraAiSlot(camera_id, camera_id, "Zone", settings.AI_DEFAULT_FPS)
-            self.scheduler._process_single_camera_result(slot, frame, results[0])
+            self.scheduler._process_single_camera_result(slot, frame, results[0], phone_res=phone_res)
             await ws_manager.broadcast("CAMERA_AI_UPDATE", slot.latest_state)
             return slot.latest_state
 

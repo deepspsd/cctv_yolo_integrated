@@ -113,7 +113,17 @@ def format_anomaly(evt: AnomalyEvent, camera_name: Optional[str] = None, employe
         "MACHINERY_HAZARD": "heavy machinery safety boundary"
     }
     friendly_ppe = ppe_friendly_names.get(evt.anomaly_type, evt.anomaly_type.lower().replace("_", " "))
-    if e_name:
+    if evt.anomaly_type == "PHONE_VIOLATION":
+        if e_name:
+            alert_msg = f"{e_name} was using mobile phone in prohibited zone"
+        else:
+            alert_msg = "Unidentified person was using mobile phone in prohibited zone"
+    elif evt.anomaly_type == "MACHINERY_HAZARD":
+        if e_name:
+            alert_msg = f"{e_name} entered heavy machinery danger boundary"
+        else:
+            alert_msg = "Worker entered heavy machinery danger boundary"
+    elif e_name:
         alert_msg = f"{e_name} has not worn {friendly_ppe}"
     else:
         alert_msg = f"Unidentified person has not worn {friendly_ppe}"
@@ -480,6 +490,9 @@ async def get_recent_anomalies_by_camera(
     date: Optional[str] = None,
     limit_per_camera: int = Query(6, ge=1, le=24),
     evidence_only: Optional[bool] = Query(None, alias="evidenceOnly"),
+    anomaly_type: Optional[str] = Query(None, alias="anomalyType"),
+    camera_id: Optional[str] = Query(None, alias="cameraId"),
+    zone: Optional[str] = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -514,6 +527,15 @@ async def get_recent_anomalies_by_camera(
 
     if evidence_only:
         sub_q = sub_q.where((AnomalyEvent.snapshot_path.isnot(None)) & (AnomalyEvent.snapshot_path != ""))
+
+    if camera_id and camera_id.upper() != "ALL":
+        sub_q = sub_q.where(AnomalyEvent.camera_id == camera_id.strip())
+
+    if zone and zone.upper() != "ALL":
+        sub_q = sub_q.where(AnomalyEvent.zone == zone.strip())
+
+    if anomaly_type and anomaly_type.upper() != "ALL":
+        sub_q = sub_q.where(AnomalyEvent.anomaly_type == anomaly_type.strip())
 
     if date:
         try:

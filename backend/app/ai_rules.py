@@ -22,14 +22,19 @@ class AnomalyRuleRegistry:
     def _normalize_name(self, name: str) -> str:
         return re.sub(r"[^a-z0-9]", "", name.lower().strip())
 
-    def discover_classes(self, model: YOLO) -> Dict[str, Any]:
+    def discover_classes(self, model: YOLO, phone_model: Optional[YOLO] = None) -> Dict[str, Any]:
         """
         Inspect model.names and dynamically build semantic mappings.
+        Optionally inspects dedicated phone_model (e.g. models/phone.pt).
         """
         self.raw_classes = {int(k): str(v) for k, v in model.names.items()}
         self.normalized_classes = {
             k: self._normalize_name(v) for k, v in self.raw_classes.items()
         }
+
+        phone_classes = {}
+        if phone_model is not None and hasattr(phone_model, "names") and phone_model.names:
+            phone_classes = {int(k): str(v) for k, v in phone_model.names.items()}
 
         # Candidate target anomaly categories
         target_rules = {
@@ -64,7 +69,7 @@ class AnomalyRuleRegistry:
                 "severity": "HIGH",
             },
             "PHONE_VIOLATION": {
-                "patterns": ["cellphone", "phone", "mobilephone", "telephone"],
+                "patterns": ["phonecall", "phone_call", "cellphone", "phone", "mobilephone", "telephone"],
                 "category": "VIOLATION",
                 "label": "Cell Phone Usage in Restricted Area",
                 "severity": "HIGH",
@@ -95,6 +100,41 @@ class AnomalyRuleRegistry:
                     "severity": rule_info["severity"],
                     "reason": "Supported by active model"
                 }
+            elif rule_id == "PHONE_VIOLATION" and phone_classes:
+                # Discover from dedicated phone model
+                p_match_id = None
+                p_match_name = None
+                for pattern in rule_info["patterns"]:
+                    for p_id, p_raw in phone_classes.items():
+                        norm_p = self._normalize_name(p_raw)
+                        if pattern == norm_p or pattern in norm_p:
+                            p_match_id = p_id
+                            p_match_name = p_raw
+                            break
+                    if p_match_id is not None:
+                        break
+                if p_match_id is not None:
+                    self.rule_mappings[rule_id] = {
+                        "rule_id": rule_id,
+                        "available": True,
+                        "model_class_id": p_match_id,
+                        "model_class_name": p_match_name,
+                        "category": rule_info["category"],
+                        "label": rule_info["label"],
+                        "severity": rule_info["severity"],
+                        "reason": "Supported by dedicated phone.pt model"
+                    }
+                else:
+                    self.rule_mappings[rule_id] = {
+                        "rule_id": rule_id,
+                        "available": False,
+                        "model_class_id": None,
+                        "model_class_name": None,
+                        "category": rule_info["category"],
+                        "label": rule_info["label"],
+                        "severity": rule_info["severity"],
+                        "reason": f"Class '{rule_id}' not found in phone model"
+                    }
             else:
                 self.rule_mappings[rule_id] = {
                     "rule_id": rule_id,
@@ -132,6 +172,10 @@ class AnomalyRuleRegistry:
 
     def get_rule_for_class_name(self, cls_name: str) -> Optional[Dict[str, Any]]:
         norm = self._normalize_name(cls_name)
+        if "phone" in norm:
+            rule = self.rule_mappings.get("PHONE_VIOLATION")
+            if rule and rule.get("available"):
+                return rule
         for rule_id, rule_info in self.rule_mappings.items():
             if rule_info.get("available"):
                 m_name = self._normalize_name(rule_info.get("model_class_name") or "")

@@ -125,13 +125,19 @@ class AnomalyStateMachine:
                         "MACHINERY_HAZARD": "heavy machinery safety boundary"
                     }
                     friendly_ppe = ppe_friendly_names.get(a_type, a_type.lower().replace("_", " "))
-                    if rec.employee_name and rec.employee_name != "Unidentified person":
+                    if a_type == "PHONE_VIOLATION":
+                        who = rec.employee_name if (rec.employee_name and rec.employee_name != "Unidentified person") else "Unidentified person"
+                        alert_message = f"{who} was using mobile phone in prohibited zone"
+                    elif a_type == "MACHINERY_HAZARD":
+                        who = rec.employee_name if (rec.employee_name and rec.employee_name != "Unidentified person") else "Worker"
+                        alert_message = f"{who} entered heavy machinery danger boundary"
+                    elif rec.employee_name and rec.employee_name != "Unidentified person":
                         alert_message = f"{rec.employee_name} has not worn {friendly_ppe}"
                     else:
                         alert_message = f"Unidentified person has not worn {friendly_ppe}"
 
                     # Calculate severity
-                    severity = "CRITICAL" if ("HARDHAT" in a_type or "HAZARD" in a_type) else ("HIGH" if ("MASK" in a_type or "VEST" in a_type) else "MEDIUM")
+                    severity = "CRITICAL" if ("HARDHAT" in a_type or "HAZARD" in a_type) else ("HIGH" if ("MASK" in a_type or "VEST" in a_type or "PHONE" in a_type) else "MEDIUM")
 
                     # Save evidence snapshot (Only for violations: NO_HARDHAT, NO_MASK, PHONE_VIOLATION, etc. Skip PERSON_DETECTED)
                     snapshot_path = None

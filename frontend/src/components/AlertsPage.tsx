@@ -1274,12 +1274,15 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         date: selectedDate || undefined,
         limitPerCamera: 6,
         evidenceOnly: evidenceOnly ? true : undefined,
+        anomalyType: selectedType !== 'ALL' ? selectedType : undefined,
+        cameraId: selectedCamera !== 'ALL' ? selectedCamera : undefined,
+        zone: selectedZone !== 'ALL' ? selectedZone : undefined,
       });
       setByCameraAlerts(items);
     } catch (err) {
       console.error('Failed to fetch by-camera alerts:', err);
     }
-  }, [selectedDate, evidenceOnly]);
+  }, [selectedDate, evidenceOnly, selectedType, selectedCamera, selectedZone]);
 
   // Reset to page 1 & re-fetch whenever any filter changes
   useEffect(() => {

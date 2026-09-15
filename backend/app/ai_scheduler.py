@@ -133,6 +133,8 @@ class FairMultiCameraScheduler:
 
         # Shared YOLO model instance
         self.model: Optional[YOLO] = None
+        self.phone_model: Optional[YOLO] = None
+        self.coco_model: Optional[YOLO] = None
         self.device: str = "cpu"
         self.use_fp16: bool = False
         self.model_loaded: bool = False
@@ -161,11 +163,13 @@ class FairMultiCameraScheduler:
     def load_model(self) -> bool:
         """
         Load YOLO model once with device auto-detection and FP16 support.
+        Also loads dedicated phone violation model (models/phone.pt).
         """
         if self.model_loaded and self.model is not None:
             return True
 
         model_path = self.resolve_model_path(settings.AI_MODEL_PATH)
+        phone_model_path = self.resolve_model_path(getattr(settings, "AI_PHONE_MODEL_PATH", "models/phone.pt"))
         logger.info(f"Loading shared YOLO model from: {model_path}")
 
         try:
@@ -203,8 +207,45 @@ class FairMultiCameraScheduler:
             dummy = np.zeros((360, 640, 3), dtype=np.uint8)
             self.model(dummy, verbose=False, device=self.device)
 
-            # Discover dynamic class mappings
-            rule_registry.discover_classes(self.model)
+            # Load dedicated phone model if available
+            if phone_model_path.exists():
+                try:
+                    self.phone_model = YOLO(str(phone_model_path))
+                    if self.device == "cuda":
+                        try:
+                            self.phone_model.to("cuda")
+                            if self.use_fp16:
+                                self.phone_model.model.half()
+                        except Exception:
+                            pass
+                    self.phone_model(dummy, verbose=False, device=self.device)
+                    logger.info(f"Dedicated phone violation model loaded successfully from: {phone_model_path}")
+                except Exception as pe:
+                    logger.warning(f"Could not load phone model ({pe}).")
+                    self.phone_model = None
+
+            # Load COCO model (YOLOv8n) for cell phone in-hand detection
+            coco_model_path = self.resolve_model_path(getattr(settings, "AI_COCO_MODEL_PATH", "models/yolov8n.pt"))
+            if coco_model_path.exists():
+                try:
+                    self.coco_model = YOLO(str(coco_model_path))
+                    if self.device == "cuda":
+                        try:
+                            self.coco_model.to("cuda")
+                            if self.use_fp16:
+                                self.coco_model.model.half()
+                        except Exception:
+                            pass
+                    self.coco_model(dummy, verbose=False, device=self.device)
+                    logger.info(f"COCO model (YOLOv8n) loaded for cell phone detection from: {coco_model_path}")
+                except Exception as ce:
+                    logger.warning(f"Could not load COCO model ({ce}). Cell phone in-hand detection disabled.")
+                    self.coco_model = None
+            else:
+                logger.warning(f"COCO model not found at {coco_model_path}. Cell phone in-hand detection disabled.")
+
+            # Discover dynamic class mappings across both models
+            rule_registry.discover_classes(self.model, phone_model=self.phone_model)
 
             self.model_loaded = True
             self.model_load_error = None
@@ -222,7 +263,24 @@ class FairMultiCameraScheduler:
                         self.model = YOLO(str(model_path))
                     dummy = np.zeros((360, 640, 3), dtype=np.uint8)
                     self.model(dummy, verbose=False, device=self.device)
-                    rule_registry.discover_classes(self.model)
+
+                    if phone_model_path.exists():
+                        try:
+                            self.phone_model = YOLO(str(phone_model_path))
+                            self.phone_model(dummy, verbose=False, device="cpu")
+                        except Exception:
+                            self.phone_model = None
+
+                    coco_model_path = self.resolve_model_path(getattr(settings, "AI_COCO_MODEL_PATH", "models/yolov8n.pt"))
+                    if coco_model_path.exists():
+                        try:
+                            self.coco_model = YOLO(str(coco_model_path))
+                            self.coco_model(dummy, verbose=False, device="cpu")
+                            logger.info("COCO model loaded on CPU fallback.")
+                        except Exception:
+                            self.coco_model = None
+
+                    rule_registry.discover_classes(self.model, phone_model=self.phone_model)
                     self.model_loaded = True
                     self.model_load_error = None
                     logger.info("Shared YOLO model initialized successfully with CPU fallback.")
@@ -442,6 +500,35 @@ class FairMultiCameraScheduler:
                     imgsz=max(s.image_size for s in batch_slots),
                     device=self.device
                 )
+
+                # Run dedicated phone violation model if loaded
+                phone_results = None
+                if self.phone_model is not None:
+                    try:
+                        phone_results = self.phone_model(
+                            batch_frames,
+                            verbose=False,
+                            conf=getattr(settings, "AI_PHONE_CONFIDENCE", 0.45),
+                            imgsz=max(s.image_size for s in batch_slots),
+                            device=self.device
+                        )
+                    except Exception as pe:
+                        logger.warning(f"Error during batched phone inference: {pe}")
+
+                # Run COCO model for cell phone in-hand detection (class 67)
+                coco_results = None
+                if self.coco_model is not None:
+                    try:
+                        coco_results = self.coco_model(
+                            batch_frames,
+                            verbose=False,
+                            conf=getattr(settings, "AI_COCO_PHONE_CONFIDENCE", 0.47),
+                            imgsz=max(s.image_size for s in batch_slots),
+                            device=self.device
+                        )
+                    except Exception as ce:
+                        logger.warning(f"Error during batched COCO inference: {ce}")
+
                 t_end = time.perf_counter()
                 total_latency_ms = (t_end - t_start) * 1000.0
                 per_camera_latency = total_latency_ms / max(1, len(batch_frames))
@@ -455,7 +542,9 @@ class FairMultiCameraScheduler:
                     slot.record_inference(per_camera_latency)
                     frame = batch_frames[idx]
                     res = results[idx]
-                    self._process_single_camera_result(slot, frame, res)
+                    phone_res = phone_results[idx] if phone_results is not None else None
+                    coco_res = coco_results[idx] if coco_results is not None else None
+                    self._process_single_camera_result(slot, frame, res, phone_res=phone_res, coco_res=coco_res)
 
             except Exception as e:
                 logger.error(f"Error during batched AI inference: {e}", exc_info=True)
@@ -473,7 +562,7 @@ class FairMultiCameraScheduler:
                     slot.last_error = str(e)
                 time.sleep(0.05)
 
-    def _process_single_camera_result(self, slot: CameraAiSlot, frame: np.ndarray, yolo_result):
+    def _process_single_camera_result(self, slot: CameraAiSlot, frame: np.ndarray, yolo_result, phone_res=None, coco_res=None):
         """
         Process detections, execute scoped tracking, associate PPE, and run state machine.
         """
@@ -581,6 +670,79 @@ class FairMultiCameraScheduler:
                     "category": "VIOLATION",
                     "severity": "HIGH"
                 })
+
+        # Parse dedicated phone.pt model detections (calling posture)
+        if phone_res is not None and hasattr(phone_res, "boxes") and len(phone_res.boxes) > 0:
+            for p_box in phone_res.boxes:
+                p_cls_id = int(p_box.cls[0])
+                p_conf = float(p_box.conf[0])
+                p_cls_name = self.phone_model.names.get(p_cls_id, "") if self.phone_model else str(p_cls_id)
+                p_xyxy = p_box.xyxy[0].cpu().numpy().tolist()
+
+                p_norm_bbox = [
+                    round(p_xyxy[0] / w, 4),
+                    round(p_xyxy[1] / h, 4),
+                    round(p_xyxy[2] / w, 4),
+                    round(p_xyxy[3] / h, 4),
+                ]
+
+                p_rule = rule_registry.get_rule_for_class_name(p_cls_name)
+                anom_type = p_rule["rule_id"] if p_rule else "PHONE_VIOLATION"
+                phone_violations += 1
+                if anom_type not in slot.enabled_rules:
+                    continue
+
+                ppe_items.append({
+                    "type": anom_type,
+                    "class_id": p_cls_id,
+                    "class_name": p_cls_name,
+                    "box": p_norm_bbox,
+                    "confidence": p_conf
+                })
+                all_detections_display.append({
+                    "type": "phone_violation",
+                    "label": "Phone Call Detected",
+                    "confidence": round(p_conf, 2),
+                    "bbox": p_norm_bbox,
+                    "category": "VIOLATION",
+                    "severity": "HIGH"
+                })
+
+        # Parse COCO model detections — class 67 = 'cell phone' (in-hand detection)
+        COCO_CELL_PHONE_CLASS = 67
+        if coco_res is not None and hasattr(coco_res, "boxes") and len(coco_res.boxes) > 0:
+            if "PHONE_VIOLATION" in slot.enabled_rules:
+                for c_box in coco_res.boxes:
+                    c_cls_id = int(c_box.cls[0])
+                    if c_cls_id != COCO_CELL_PHONE_CLASS:
+                        continue
+                    c_conf = float(c_box.conf[0])
+                    coco_threshold = getattr(settings, "AI_COCO_PHONE_CONFIDENCE", 0.47)
+                    if c_conf < coco_threshold:
+                        continue
+                    c_xyxy = c_box.xyxy[0].cpu().numpy().tolist()
+                    c_norm_bbox = [
+                        round(c_xyxy[0] / w, 4),
+                        round(c_xyxy[1] / h, 4),
+                        round(c_xyxy[2] / w, 4),
+                        round(c_xyxy[3] / h, 4),
+                    ]
+                    phone_violations += 1
+                    ppe_items.append({
+                        "type": "PHONE_VIOLATION",
+                        "class_id": c_cls_id,
+                        "class_name": "cell phone",
+                        "box": c_norm_bbox,
+                        "confidence": c_conf
+                    })
+                    all_detections_display.append({
+                        "type": "phone_violation",
+                        "label": "Cell Phone in Hand",
+                        "confidence": round(c_conf, 2),
+                        "bbox": c_norm_bbox,
+                        "category": "VIOLATION",
+                        "severity": "HIGH"
+                    })
 
         # 1. Update Per-Camera Scoped Tracker
         tracker = multi_camera_tracker.get_tracker(slot.camera_id)

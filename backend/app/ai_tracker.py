@@ -151,49 +151,57 @@ class ScopedMultiCameraTracker:
         """
         Spatial logic association:
         Associates PPE violations/detections and machinery hazards to nearby person tracks.
+        PHONE_VIOLATION items that cannot be spatially linked to a person still fire
+        (phone visible in frame = violation regardless of person detection).
         """
         results = []
-        if not active_tracks:
-            return results
+        matched_phone_items = set()  # track indices of phone items already matched
 
-        for ppe in ppe_items:
-            ppe_box = ppe["box"]
-            ppe_center = box_center(ppe_box)
-            ppe_type = ppe["type"]
-            best_person = None
-            best_score = 0.0
+        if active_tracks:
+            for ppe_idx, ppe in enumerate(ppe_items):
+                ppe_box = ppe["box"]
+                ppe_center = box_center(ppe_box)
+                ppe_type = ppe["type"]
+                best_person = None
+                best_score = 0.0
 
-            for trk in active_tracks:
-                p_box = trk.box
-                # Check spatial evidence
-                inside = is_point_inside(ppe_center, p_box, margin=0.1)
-                iou = compute_iou(p_box, ppe_box)
+                for trk in active_tracks:
+                    p_box = trk.box
+                    # Check spatial evidence
+                    inside = is_point_inside(ppe_center, p_box, margin=0.1)
+                    iou = compute_iou(p_box, ppe_box)
 
-                # Prioritize hardhat / mask in upper body / head region
-                score = 0.0
-                if inside:
-                    score = 1.0 + iou
-                elif iou > 0.05:
-                    score = iou
+                    # Expand margin for phone items — phone box is small vs person box
+                    if ppe_type == "PHONE_VIOLATION":
+                        inside = inside or is_point_inside(ppe_center, p_box, margin=0.25)
 
-                if score > best_score and score >= 0.1:
-                    best_score = score
-                    best_person = trk
+                    # Prioritize hardhat / mask in upper body / head region
+                    score = 0.0
+                    if inside:
+                        score = 1.0 + iou
+                    elif iou > 0.05:
+                        score = iou
 
-            if best_person:
-                results.append({
-                    "track_id": best_person.track_id,
-                    "camera_id": camera_id,
-                    "anomaly_type": ppe_type,
-                    "model_class_id": ppe.get("class_id"),
-                    "model_class_name": ppe.get("class_name"),
-                    "confidence": ppe["confidence"],
-                    "ppe_box": ppe_box,
-                    "person_box": best_person.box,
-                    "employee_id": best_person.employee_id,
-                    "employee_name": best_person.employee_name,
-                    "association_score": round(best_score, 2)
-                })
+                    if score > best_score and score >= 0.1:
+                        best_score = score
+                        best_person = trk
+
+                if best_person:
+                    if ppe_type == "PHONE_VIOLATION":
+                        matched_phone_items.add(ppe_idx)
+                    results.append({
+                        "track_id": best_person.track_id,
+                        "camera_id": camera_id,
+                        "anomaly_type": ppe_type,
+                        "model_class_id": ppe.get("class_id"),
+                        "model_class_name": ppe.get("class_name"),
+                        "confidence": ppe["confidence"],
+                        "ppe_box": ppe_box,
+                        "person_box": best_person.box,
+                        "employee_id": best_person.employee_id,
+                        "employee_name": best_person.employee_name,
+                        "association_score": round(best_score, 2)
+                    })
 
         # Check hazardous machinery / vehicle proximity
         if machinery_items:

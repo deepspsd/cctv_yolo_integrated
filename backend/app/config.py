@@ -48,6 +48,10 @@ class Settings(BaseSettings):
 
     # AI Inference Configuration
     AI_MODEL_PATH: str = os.getenv("AI_MODEL_PATH", "./models/ppe.pt")
+    AI_PHONE_MODEL_PATH: str = os.getenv("AI_PHONE_MODEL_PATH", "./models/phone.pt")
+    AI_COCO_MODEL_PATH: str = os.getenv("AI_COCO_MODEL_PATH", "./models/yolov8n.pt")
+    AI_PHONE_CONFIDENCE: float = float(os.getenv("AI_PHONE_CONFIDENCE", "0.75"))   # phone.pt calling posture threshold (high = fewer false positives on objects)
+    AI_COCO_PHONE_CONFIDENCE: float = float(os.getenv("AI_COCO_PHONE_CONFIDENCE", "0.70"))  # COCO cell phone in-hand threshold
     AI_DEFAULT_FPS: int = int(os.getenv("AI_DEFAULT_FPS", "5"))
     AI_DEFAULT_CONFIDENCE: float = float(os.getenv("AI_DEFAULT_CONFIDENCE", "0.45"))
     AI_IMAGE_SIZE: int = int(os.getenv("AI_IMAGE_SIZE", "640"))

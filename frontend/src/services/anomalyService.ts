@@ -79,12 +79,15 @@ export const anomalyService = {
   },
 
   /** Returns balanced recent anomalies partitioned per camera for By Camera view. */
-  async getByCameraRecent(filters: { date?: string; limitPerCamera?: number; evidenceOnly?: boolean } = {}): Promise<AnomalyAlertEvent[]> {
+  async getByCameraRecent(filters: { date?: string; limitPerCamera?: number; evidenceOnly?: boolean; anomalyType?: string; cameraId?: string; zone?: string } = {}): Promise<AnomalyAlertEvent[]> {
     try {
       const params = new URLSearchParams();
       if (filters.date) params.append('date', filters.date);
       if (filters.limitPerCamera) params.append('limit_per_camera', String(filters.limitPerCamera));
       if (filters.evidenceOnly) params.append('evidenceOnly', 'true');
+      if (filters.anomalyType && filters.anomalyType !== 'ALL') params.append('anomalyType', filters.anomalyType);
+      if (filters.cameraId && filters.cameraId !== 'ALL') params.append('cameraId', filters.cameraId);
+      if (filters.zone && filters.zone !== 'ALL') params.append('zone', filters.zone);
       const qs = params.toString();
       const res = await apiFetch(`/anomalies/by-camera-recent${qs ? `?${qs}` : ''}`);
       if (!res.ok) return [];
