@@ -253,24 +253,18 @@ class FacePipeline:
     def match_against_templates(
         self,
         query_embedding: np.ndarray,
-        employee_templates: Dict[str, List[Dict[str, Any]]]
+        employee_templates: Dict[str, List[Dict[str, Any]]],
+        min_threshold: Optional[float] = None
     ) -> Tuple[Optional[str], float, Optional[Dict[str, Any]]]:
         """
         Compares query embedding against registered employee templates.
         Supports multi-angle templates (takes max similarity across angles).
-
-        employee_templates: {
-            "emp_id": [
-                {"embedding": [...], "pose": "frontal", "quality_score": 0.9, "source": "webcam"},
-                {"embedding": [...], "pose": "left", "quality_score": 0.85}
-            ]
-        }
-
-        Returns:
-            (best_employee_id, best_similarity_score, best_template_info)
+        Strictly returns None if best score does not meet minimum threshold.
         """
         if query_embedding is None or not employee_templates:
             return None, 0.0, None
+
+        threshold = min_threshold if min_threshold is not None else settings.IDENTITY_MATCH_THRESHOLD
 
         best_emp_id = None
         best_score = 0.0
@@ -288,6 +282,10 @@ class FacePipeline:
                     best_score = weighted_sim
                     best_emp_id = emp_id
                     best_tpl = tpl
+
+        # Enforce threshold gate to avoid false positives on unconfident detections
+        if best_score < threshold:
+            return None, round(best_score, 3), None
 
         return best_emp_id, round(best_score, 3), best_tpl
 

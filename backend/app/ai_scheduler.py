@@ -630,13 +630,19 @@ class FairMultiCameraScheduler:
 
             # If CONFIRMED employee observation, trigger attendance
             if id_state == IdentityState.CONFIRMED and emp_id:
+                is_face_verified = bool(
+                    face_match_id == emp_id
+                    and face_sim >= settings.IDENTITY_MATCH_THRESHOLD
+                    and face_quality in (FaceQualityCategory.HIGH, FaceQualityCategory.MEDIUM)
+                )
                 self._dispatch_attendance_observation(
                     employee_id=emp_id,
                     camera_id=slot.camera_id,
                     track_id=trk.track_id,
                     identity_confidence=id_conf,
                     face_confidence=face_sim if face_match_id else None,
-                    body_reid_confidence=reid_sim if reid_match_id else None
+                    body_reid_confidence=reid_sim if reid_match_id else None,
+                    is_face_verified=is_face_verified
                 )
 
         # 2. PPE Spatial Association
@@ -748,7 +754,8 @@ class FairMultiCameraScheduler:
         track_id: Optional[int],
         identity_confidence: float,
         face_confidence: Optional[float] = None,
-        body_reid_confidence: Optional[float] = None
+        body_reid_confidence: Optional[float] = None,
+        is_face_verified: bool = False
     ):
         """
         Dispatches confirmed employee observation to attendance service asynchronously.
@@ -768,7 +775,8 @@ class FairMultiCameraScheduler:
                         track_id=track_id,
                         identity_confidence=identity_confidence,
                         face_confidence=face_confidence,
-                        body_reid_confidence=body_reid_confidence
+                        body_reid_confidence=body_reid_confidence,
+                        is_face_verified=is_face_verified
                     ),
                     loop
                 )

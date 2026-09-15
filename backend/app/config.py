@@ -62,9 +62,9 @@ class Settings(BaseSettings):
     AI_MOCK_MODE: bool = os.getenv("AI_MOCK_MODE", "false").lower() in ("true", "1", "yes")
 
     # Identity, Biometrics & Attendance Configuration
-    IDENTITY_CONFIRMATION_FRAMES: int = int(os.getenv("IDENTITY_CONFIRMATION_FRAMES", "3"))
-    IDENTITY_MATCH_THRESHOLD: float = float(os.getenv("IDENTITY_MATCH_THRESHOLD", "0.65"))
-    IDENTITY_REID_THRESHOLD: float = float(os.getenv("IDENTITY_REID_THRESHOLD", "0.60"))
+    IDENTITY_CONFIRMATION_FRAMES: int = int(os.getenv("IDENTITY_CONFIRMATION_FRAMES", "4"))
+    IDENTITY_MATCH_THRESHOLD: float = float(os.getenv("IDENTITY_MATCH_THRESHOLD", "0.70"))
+    IDENTITY_REID_THRESHOLD: float = float(os.getenv("IDENTITY_REID_THRESHOLD", "0.78"))
     ATTENDANCE_ABSENCE_MINUTES: int = int(os.getenv("ATTENDANCE_ABSENCE_MINUTES", "30"))
     EVIDENCE_RETENTION_DAYS: int = int(os.getenv("EVIDENCE_RETENTION_DAYS", "90"))
 

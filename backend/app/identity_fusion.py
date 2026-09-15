@@ -148,22 +148,32 @@ class IdentityFusionEngine:
             face_weight = 0.0
             reid_weight = 1.0
 
+        # Validate inputs independently
+        valid_face = (
+            face_match_id is not None
+            and face_sim >= settings.IDENTITY_MATCH_THRESHOLD
+            and face_quality in (FaceQualityCategory.HIGH, FaceQualityCategory.MEDIUM, FaceQualityCategory.LOW)
+        )
+        valid_reid = (
+            reid_match_id is not None
+            and reid_sim >= settings.IDENTITY_REID_THRESHOLD
+        )
+
         # 2. Multi-modal candidate consensus
         fused_emp_id = None
         fused_score = 0.0
 
-        if face_match_id and reid_match_id and face_match_id == reid_match_id:
-            # Both signals agree on same employee -> high confidence synergy
+        if valid_face and valid_reid and face_match_id == reid_match_id:
+            # Both signals independently confident on same employee -> synergy
             fused_emp_id = face_match_id
             fused_score = (face_sim * face_weight) + (reid_sim * reid_weight)
-            # Consensus bonus
-            fused_score = min(1.0, fused_score * 1.08)
-        elif face_match_id and face_weight > 0.4 and face_sim >= settings.IDENTITY_MATCH_THRESHOLD:
+            fused_score = min(1.0, fused_score * 1.05)
+        elif valid_face and face_quality in (FaceQualityCategory.HIGH, FaceQualityCategory.MEDIUM):
             # Primary face signal is high quality and confident
             fused_emp_id = face_match_id
-            fused_score = face_sim * (0.8 + 0.2 * face_quality_score)
-        elif reid_match_id and reid_sim >= settings.IDENTITY_REID_THRESHOLD and face_weight <= 0.4:
-            # Secondary Re-ID signal confident (overhead / low-face camera)
+            fused_score = face_sim * (0.85 + 0.15 * face_quality_score)
+        elif valid_reid and reid_sim >= 0.82 and face_weight <= 0.4:
+            # Secondary Re-ID signal strictly confident (overhead / low-face camera)
             fused_emp_id = reid_match_id
             fused_score = reid_sim * 0.90
         else:

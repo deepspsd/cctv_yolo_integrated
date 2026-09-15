@@ -786,11 +786,11 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ cameras = [] }) 
 
                   {/* Bottom Bar Info */}
                   <div className="relative z-20 flex items-center justify-between text-[11px] font-mono text-zinc-300 pt-1">
-                    <span className="truncate text-[10.5px] tracking-tight flex items-center gap-1">
-                      <CameraIcon className="w-3 h-3 text-orange-400" />
-                      {r.clockInCameraName || 'First Node'}
+                    <span className="truncate text-[10.5px] tracking-tight flex items-center gap-1 min-w-0" title={`Clocked in at ${r.clockInCameraName || 'First Node'}`}>
+                      <CameraIcon className="w-3 h-3 text-orange-400 shrink-0" />
+                      <span className="truncate">In: {r.clockInCameraName || 'First Node'}</span>
                     </span>
-                    <span className="text-[10.5px] tracking-tight text-emerald-400 font-bold font-mono">
+                    <span className="text-[10.5px] tracking-tight text-emerald-400 font-bold font-mono shrink-0 ml-1">
                       {formatTime(r.clockInTime)}
                     </span>
                   </div>
@@ -811,8 +811,11 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ cameras = [] }) 
                     <span className="text-[12px] font-bold text-black dark:text-white">
                       {r.totalHours ? `${r.totalHours}h` : 'Active'}
                     </span>
-                    <span className="block text-[10px] text-[#8c8c8c] dark:text-[#71717a]">
-                      Last: {formatTime(r.lastSeenTime)}
+                    <span
+                      className="block text-[10px] text-[#8c8c8c] dark:text-[#71717a] truncate max-w-[140px]"
+                      title={`Last observed on ${r.lastSeenCameraName || r.clockInCameraName || 'Camera Node'} at ${formatTime(r.lastSeenTime)}`}
+                    >
+                      {r.lastSeenCameraName ? `${r.lastSeenCameraName} • ` : ''}{formatTime(r.lastSeenTime)}
                     </span>
                   </div>
                 </div>

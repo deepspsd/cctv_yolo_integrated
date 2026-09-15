@@ -95,11 +95,12 @@ class AttendanceService:
         track_id: Optional[int],
         identity_confidence: float,
         face_confidence: Optional[float] = None,
-        body_reid_confidence: Optional[float] = None
+        body_reid_confidence: Optional[float] = None,
+        is_face_verified: bool = False
     ) -> Optional[Dict[str, Any]]:
         """
         Processes a confirmed employee observation:
-        - If first confirmed observation today: creates clock_in attendance record.
+        - If first confirmed observation today: requires is_face_verified=True to create clock_in attendance record.
         - If subsequent confirmed observation today: updates last_seen_at and last_seen_camera_id.
         - Persists observation event to attendance_observations.
         """
@@ -108,7 +109,22 @@ class AttendanceService:
 
         try:
             async with AsyncSessionLocal() as db:
-                # 1. Log observation record
+                # 1. Query today's attendance record for this employee
+                stmt = select(Attendance).where(
+                    and_(Attendance.employee_id == employee_id, Attendance.date == today_str)
+                )
+                res = await db.execute(stmt)
+                att = res.scalar_one_or_none()
+
+                # Guard: Initial Clock-In requires biometric face verification
+                if att is None and not is_face_verified:
+                    logger.info(
+                        f"Skipping clock-in for employee {employee_id} via {camera_id}: "
+                        f"Biometric face verification required for initial clock-in."
+                    )
+                    return None
+
+                # 2. Log observation record
                 obs = AttendanceObservation(
                     id=f"obs_{uuid.uuid4().hex[:12]}",
                     employee_id=employee_id,
@@ -121,13 +137,6 @@ class AttendanceService:
                     source="CCTV"
                 )
                 db.add(obs)
-
-                # 2. Query today's attendance record for this employee
-                stmt = select(Attendance).where(
-                    and_(Attendance.employee_id == employee_id, Attendance.date == today_str)
-                )
-                res = await db.execute(stmt)
-                att = res.scalar_one_or_none()
 
                 is_new_clock_in = False
                 if att is None:

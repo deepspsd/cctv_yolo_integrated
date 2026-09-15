@@ -133,3 +133,35 @@ async def test_attendance_service_record_and_export():
         # Clean up
         await db.delete(emp)
         await db.commit()
+
+def test_unconfident_match_rejected():
+    # 1. Face pipeline rejects below threshold
+    dummy_emb = np.zeros(128, dtype=np.float32)
+    templates = {
+        "emp_001": [{"embedding": np.ones(128, dtype=np.float32).tolist(), "quality_score": 1.0}]
+    }
+    match_id, score, _ = face_pipeline.match_against_templates(dummy_emb, templates, min_threshold=0.70)
+    assert match_id is None
+
+    # 2. Re-ID pipeline rejects below threshold
+    match_id, score, _ = reid_pipeline.match_against_templates(dummy_emb, templates, min_threshold=0.78)
+    assert match_id is None
+
+@pytest.mark.asyncio
+async def test_reid_alone_cannot_clock_in():
+    import uuid
+    emp_suffix = uuid.uuid4().hex[:6]
+    test_emp_id = f"test_emp_{emp_suffix}"
+
+    # Observation with is_face_verified=False must not clock in
+    res = await attendance_service.record_confirmed_observation(
+        employee_id=test_emp_id,
+        camera_id="cam_001",
+        track_id=1,
+        identity_confidence=0.85,
+        face_confidence=None,
+        body_reid_confidence=0.85,
+        is_face_verified=False
+    )
+    assert res is None
+
