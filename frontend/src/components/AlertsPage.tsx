@@ -1084,6 +1084,9 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
   const [evidenceDates, setEvidenceDates] = useState<{ date: string; totalAlerts: number; evidencePhotos: number }[]>([]);
   const [loadingDates, setLoadingDates] = useState(false);
 
+  // Real DB total count — not capped by pagination limit
+  const [realTotalCount, setRealTotalCount] = useState<number | null>(null);
+
   // Locally deleted incident IDs for instant reactive feedback
   const [deletedAlertIds, setDeletedAlertIds] = useState<Set<string>>(new Set());
 
@@ -1156,15 +1159,30 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     }
   }, []);
 
-  // Auto-sync alerts and evidence every 5 seconds
+  // Fetch real total count from backend — not bounded by pagination limit
+  const fetchRealTotal = useCallback(async () => {
+    try {
+      const total = await anomalyService.getTotal();
+      setRealTotalCount(total);
+    } catch { /* ignore */ }
+  }, []);
+
+  // Auto-sync alerts and evidence every 5 seconds; total every 30 seconds
   useEffect(() => {
     fetchEvidenceDates();
-    const interval = setInterval(() => {
+    fetchRealTotal();
+    const interval5s = setInterval(() => {
       onRefresh?.();
       fetchEvidenceDates();
     }, 5000);
-    return () => clearInterval(interval);
-  }, [fetchEvidenceDates, onRefresh]);
+    const interval30s = setInterval(() => {
+      fetchRealTotal();
+    }, 30_000);
+    return () => {
+      clearInterval(interval5s);
+      clearInterval(interval30s);
+    };
+  }, [fetchEvidenceDates, fetchRealTotal, onRefresh]);
 
   // Merged alerts with normalization, historical date fetch & local statuses
   const mergedAlerts = useMemo(() => {
@@ -1800,7 +1818,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             {totalWithEvidenceCount}
           </div>
           <p className="mt-1 text-[11px] font-mono text-[#f97316]">
-            {summary.total} total events captured
+            {realTotalCount !== null ? realTotalCount : summary.total} total events captured
           </p>
         </div>
 

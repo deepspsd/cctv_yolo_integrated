@@ -206,6 +206,15 @@ export default function App() {
     }
   }, [loadCameras, loadAlerts]);
 
+  // Periodic alert refresh every 60s — keeps alerts state accurate across all pages
+  useEffect(() => {
+    if (!authService.isLoggedIn()) return;
+    const interval = setInterval(() => {
+      loadAlerts();
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [loadAlerts]);
+
   // Force logout helper — used by AUTH_EXPIRED and 401 errors
   const handleForceLogout = useCallback(() => {
     authService.logout();
@@ -270,12 +279,14 @@ export default function App() {
           return current;
         });
       } else if (event.type === 'ATTENDANCE_UPDATE') {
+        // Only show toast on initial daily clock-in — no anomaly creation from attendance
         const att = event.payload;
-        // Anti-spam guard: only show toast on initial daily clock-in or distinct new event
         if (att && att.isClockIn) {
           soundService.playTactileBlip(920, 0.02);
           addToast(`✅ Attendance Clocked: ${att.employeeName || 'Staff'} (${att.status || 'PRESENT'})`, 'info');
         }
+      } else if (event.type === 'CAMERA_ANOMALY_ALERT') {
+        // Real AI anomaly from backend scheduler — handle properly
         const raw = event.payload;
         const newAlert: AnomalyAlertEvent = {
           id: raw.id || `evt_${Date.now()}`,
@@ -287,7 +298,7 @@ export default function App() {
           modelClassId: raw.modelClassId ?? raw.model_class_id,
           modelClassName: raw.modelClassName || raw.model_class_name,
           confidence: raw.confidence ?? 0.85,
-          severity: raw.severity || (raw.anomaly_type && (raw.anomaly_type.includes('NO_') || raw.anomaly_type.includes('HAZARD')) ? 'HIGH' : 'MEDIUM'),
+          severity: raw.severity || ((raw.anomaly_type || '').includes('NO_') || (raw.anomaly_type || '').includes('HAZARD') ? 'HIGH' : 'MEDIUM'),
           trackId: raw.trackId ?? raw.track_id,
           employeeId: raw.employeeId || raw.employee_id || null,
           employeeName: raw.employeeName || raw.employee_name || null,
@@ -300,15 +311,16 @@ export default function App() {
           snapshotPath: raw.snapshotPath || raw.snapshot_path || null,
           createdAt: raw.createdAt || raw.created_at || raw.confirmed_at || new Date().toISOString(),
         };
-
         soundService.playAlert();
         setAlerts((prev) => {
+          // Deduplicate by id — never double-add
           if (prev.some((a) => a.id === newAlert.id)) return prev;
           return [newAlert, ...prev];
         });
         const toastMsg = newAlert.alertMessage || `🚨 AI Alert: ${newAlert.anomalyType} on ${newAlert.cameraName}!`;
         addToast(toastMsg, 'error');
       }
+
     });
 
     return () => { unsubscribe(); };

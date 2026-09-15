@@ -266,6 +266,32 @@ async def list_anomalies(
 
     return [format_anomaly(evt, camera_name, employee_name) for evt, camera_name, employee_name in rows]
 
+@router.get("/total")
+async def get_anomaly_total(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns the real total count of anomaly events in the DB for this user.
+    No pagination limit — always reflects exact DB row count.
+    Excludes PERSON_DETECTED.
+    """
+    user_role = (getattr(user, "role", "") or "").upper()
+    is_admin = user_role in ("ADMINISTRATOR", "ADMIN", "FACILITY_MANAGER", "SECURITY_OFFICER")
+
+    count_q = select(func.count(AnomalyEvent.id)).join(
+        Camera, AnomalyEvent.camera_id == Camera.id
+    ).where(
+        AnomalyEvent.anomaly_type != "PERSON_DETECTED"
+    )
+
+    if not is_admin:
+        count_q = count_q.where((AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id))
+
+    result = await db.execute(count_q)
+    total = result.scalar_one_or_none() or 0
+    return {"total": total}
+
 @router.get("/dates")
 async def list_evidence_dates(
     user: User = Depends(get_current_user),
