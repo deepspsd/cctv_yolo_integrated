@@ -38,8 +38,9 @@ import {
   Download,
 } from 'lucide-react';
 import { AnomalyAlertEvent, Camera } from '../types';
-import { anomalyService } from '../services/anomalyService';
+import { anomalyService, AnomalyStats } from '../services/anomalyService';
 import { soundService } from '../services/soundService';
+import { cameraWebSocket } from '../services/cameraService';
 
 interface AlertsPageProps {
   alerts: AnomalyAlertEvent[];
@@ -861,9 +862,9 @@ const IncidentEvidenceCard: React.FC<IncidentEvidenceCardProps> = ({
   const SevIcon = sevTheme.icon;
 
   const isRecent = useMemo(() => {
-    const t = new Date(alert.confirmedAt || alert.createdAt).getTime();
-    if (!t) return false;
-    return Date.now() - t < 5 * 60 * 1000;
+    const d = parseIsoToUtc(alert.confirmedAt || alert.createdAt);
+    if (!d) return false;
+    return Date.now() - d.getTime() < 10 * 60 * 1000;
   }, [alert.confirmedAt, alert.createdAt]);
 
   return (
@@ -1069,6 +1070,20 @@ const IncidentEvidenceCard: React.FC<IncidentEvidenceCardProps> = ({
   );
 };
 
+// ─── Pagination Number Generator Helper ────────────────────────────────────
+const getPageNumbers = (current: number, total: number): (number | string)[] => {
+  if (total <= 7) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+  if (current <= 4) {
+    return [1, 2, 3, 4, 5, '...', total];
+  }
+  if (current >= total - 3) {
+    return [1, '...', total - 4, total - 3, total - 2, total - 1, total];
+  }
+  return [1, '...', current - 1, current, current + 1, '...', total];
+};
+
 // ─── Main Alerts & Evidence Page Component ──────────────────────────────────
 
 export const AlertsPage: React.FC<AlertsPageProps> = ({
@@ -1086,6 +1101,9 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
   // Real DB total count — not capped by pagination limit
   const [realTotalCount, setRealTotalCount] = useState<number | null>(null);
 
+  // Real DB KPI stats — all counts from server with date/filter support
+  const [dbStats, setDbStats] = useState<AnomalyStats | null>(null);
+
   // Locally deleted incident IDs for instant reactive feedback
   const [deletedAlertIds, setDeletedAlertIds] = useState<Set<string>>(new Set());
 
@@ -1099,6 +1117,12 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
 
   // Filters State - Default strictly to TODAY so only today's anomalies are shown by default
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 250);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   const [selectedCamera, setSelectedCamera] = useState('ALL');
   const [selectedZone, setSelectedZone] = useState('ALL');
   const [selectedType, setSelectedType] = useState('ALL');
@@ -1117,57 +1141,157 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
   const [localStatuses, setLocalStatuses] = useState<Record<string, string>>({});
   const [resolvingId, setResolvingId] = useState<string | null>(null);
 
-  // ── Backend-paged data layer ──────────────────────────────────────────────
-  const PAGE_SIZE = 50;
+  // ── Proper Server-Side Pagination Data Layer ────────────────────────────────
+  const [pageSize, setPageSize] = useState<number>(24);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [totalCount, setTotalCount] = useState<number>(0);
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(totalCount / pageSize)), [totalCount, pageSize]);
   const [backendAlerts, setBackendAlerts] = useState<AnomalyAlertEvent[]>([]);
-  const [backendPage, setBackendPage] = useState(0);
-  const [hasMore, setHasMore] = useState(true);
+  const [liveSessionAlerts, setLiveSessionAlerts] = useState<AnomalyAlertEvent[]>([]);
+  const [byCameraAlerts, setByCameraAlerts] = useState<AnomalyAlertEvent[]>([]);
   const [isFetchingBackend, setIsFetchingBackend] = useState(false);
 
+  // Real-time live listener for incoming CCTV anomaly alerts across all cameras
+  useEffect(() => {
+    const unsub = cameraWebSocket.subscribe((event) => {
+      if (event.type === 'CAMERA_ANOMALY_ALERT') {
+        const raw = event.payload;
+        if (!raw || !raw.id) return;
+        const newAlert: AnomalyAlertEvent = {
+          id: raw.id,
+          cameraId: raw.cameraId || raw.camera_id || '',
+          cameraName: raw.cameraName || raw.camera_name || raw.cameraId || raw.camera_id || '',
+          zone: raw.zone || 'General Facility',
+          eventCategory: raw.eventCategory || raw.event_category || 'VIOLATION',
+          anomalyType: raw.anomalyType || raw.anomaly_type || 'ANOMALY',
+          modelClassId: raw.modelClassId ?? raw.model_class_id,
+          modelClassName: raw.modelClassName || raw.model_class_name,
+          confidence: raw.confidence ?? 0.85,
+          severity: raw.severity || ((raw.anomaly_type || '').includes('NO_') || (raw.anomaly_type || '').includes('HAZARD') ? 'CRITICAL' : 'HIGH'),
+          trackId: raw.trackId ?? raw.track_id,
+          employeeId: raw.employeeId || raw.employee_id || null,
+          employeeName: raw.employeeName || raw.employee_name || null,
+          alertMessage: raw.alertMessage || raw.alert_message || null,
+          firstSeenAt: raw.firstSeenAt || raw.first_seen_at || new Date().toISOString(),
+          confirmedAt: raw.confirmedAt || raw.confirmed_at || raw.timestamp || new Date().toISOString(),
+          endedAt: raw.endedAt || raw.ended_at,
+          durationSeconds: raw.durationSeconds ?? raw.duration_seconds,
+          status: 'NEW',
+          snapshotPath: raw.snapshotPath || raw.snapshot_path || null,
+          createdAt: raw.createdAt || raw.created_at || new Date().toISOString(),
+        };
+
+        // Add to live session alerts (newest first)
+        setLiveSessionAlerts((prev) => {
+          if (prev.some((a) => a.id === newAlert.id)) return prev;
+          return [newAlert, ...prev];
+        });
+
+        // Increment pagination counts
+        setTotalCount((prev) => prev + 1);
+        setRealTotalCount((prev) => prev + 1);
+
+        // Increment stats live (including per-camera count)
+        setDbStats((prev) => {
+          if (!prev) return prev;
+          const isCritical = newAlert.severity === 'CRITICAL';
+          const camId = newAlert.cameraId;
+          const prevCounts = prev.cameraCounts || {};
+          return {
+            ...prev,
+            total: prev.total + 1,
+            today: prev.today + 1,
+            dateCount: prev.dateCount + 1,
+            evidencePhotos: newAlert.snapshotPath ? prev.evidencePhotos + 1 : prev.evidencePhotos,
+            critical: isCritical ? prev.critical + 1 : prev.critical,
+            high: !isCritical ? prev.high + 1 : prev.high,
+            highSeverity: prev.highSeverity + 1,
+            unresolved: prev.unresolved + 1,
+            cameraCounts: {
+              ...prevCounts,
+              [camId]: (prevCounts[camId] || 0) + 1,
+            },
+          };
+        });
+      }
+    });
+    return () => { unsub(); };
+  }, []);
+
   /**
-   * Fetches a page of alerts from backend with all active filters applied server-side.
-   * reset=true → clears existing results and fetches page 0.
-   * reset=false → appends next page (Load More).
+   * Fetches an exact page of alerts from backend with all active filters applied server-side.
    */
-  const fetchBackendAlerts = useCallback(async (reset: boolean = true) => {
-    if (isFetchingBackend && !reset) return; // don't double-fetch on Load More
+  const fetchBackendAlerts = useCallback(async (page: number = currentPage, currentSize: number = pageSize) => {
     setIsFetchingBackend(true);
-    const offset = reset ? 0 : backendPage * PAGE_SIZE;
+    const offset = Math.max(0, (page - 1) * currentSize);
     try {
       const apiOrder: 'asc' | 'desc' = (sortOrder === 'asc') ? 'asc' : 'desc';
-      const data = await anomalyService.getAnomalies({
+      const { items, total } = await anomalyService.getAnomaliesPaginated({
         date: selectedDate || undefined,
         cameraId: selectedCamera !== 'ALL' ? selectedCamera : undefined,
         zone: selectedZone !== 'ALL' ? selectedZone : undefined,
         anomalyType: selectedType !== 'ALL' ? selectedType : undefined,
-        status: (selectedStatus !== 'ALL' && selectedStatus !== 'UNRESOLVED') ? selectedStatus : undefined,
+        severity: selectedSeverity !== 'ALL' ? selectedSeverity : undefined,
+        status: selectedStatus !== 'ALL' ? selectedStatus : undefined,
+        evidenceOnly: evidenceOnly ? true : undefined,
+        search: debouncedSearch.trim() || undefined,
         order: apiOrder,
-        limit: PAGE_SIZE,
+        limit: currentSize,
         offset,
       });
-      setHasMore(data.length === PAGE_SIZE);
-      if (reset) {
-        setBackendAlerts(data);
-        setBackendPage(1);
-      } else {
-        setBackendAlerts((prev) => {
-          const ids = new Set(prev.map((a) => a.id));
-          return [...prev, ...data.filter((a) => !ids.has(a.id))];
-        });
-        setBackendPage((p) => p + 1);
-      }
+      setBackendAlerts(items);
+      setTotalCount(total);
+      setCurrentPage(page);
     } catch (err) {
       console.error('Backend alert fetch failed:', err);
     } finally {
       setIsFetchingBackend(false);
     }
-  }, [isFetchingBackend, backendPage, sortOrder, selectedDate, selectedCamera, selectedZone, selectedType, selectedStatus]);
+  }, [
+    currentPage, pageSize, sortOrder, selectedDate,
+    selectedCamera, selectedZone, selectedType, selectedSeverity,
+    selectedStatus, evidenceOnly, debouncedSearch
+  ]);
 
-  // Re-fetch from page 0 whenever server-side filters change
+  // Fetch all KPI stats from backend
+  const fetchStats = useCallback(async () => {
+    try {
+      const stats = await anomalyService.getStats({
+        date: selectedDate || undefined,
+        cameraId: selectedCamera !== 'ALL' ? selectedCamera : undefined,
+        zone: selectedZone !== 'ALL' ? selectedZone : undefined,
+        anomalyType: selectedType !== 'ALL' ? selectedType : undefined,
+      });
+      setDbStats(stats);
+      setRealTotalCount(stats.total);
+    } catch { /* ignore */ }
+  }, [selectedDate, selectedCamera, selectedZone, selectedType]);
+
+  // Fetch balanced recent alerts per camera for By Camera stream view
+  const fetchByCameraAlerts = useCallback(async () => {
+    try {
+      const items = await anomalyService.getByCameraRecent({
+        date: selectedDate || undefined,
+        limitPerCamera: 6,
+        evidenceOnly: evidenceOnly ? true : undefined,
+      });
+      setByCameraAlerts(items);
+    } catch (err) {
+      console.error('Failed to fetch by-camera alerts:', err);
+    }
+  }, [selectedDate, evidenceOnly]);
+
+  // Reset to page 1 & re-fetch whenever any filter changes
   useEffect(() => {
-    fetchBackendAlerts(true);
+    setCurrentPage(1);
+    fetchBackendAlerts(1, pageSize);
+    fetchStats();
+    fetchByCameraAlerts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDate, selectedCamera, selectedZone, selectedType, selectedStatus, sortOrder]);
+  }, [
+    selectedDate, selectedCamera, selectedZone, selectedType,
+    selectedSeverity, selectedStatus, evidenceOnly, debouncedSearch, sortOrder
+  ]);
 
   // Fetch evidence dates from backend
   const fetchEvidenceDates = useCallback(async () => {
@@ -1190,41 +1314,56 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     } catch { /* ignore */ }
   }, []);
 
-  // Light polling — evidence dates every 60s, total every 60s, backend page-0 refresh every 60s
+  // Light polling — evidence dates every 60s, stats every 60s, backend refresh every 60s
   useEffect(() => {
     fetchEvidenceDates();
     fetchRealTotal();
+    fetchStats();
+    fetchByCameraAlerts();
     const interval = setInterval(() => {
       fetchEvidenceDates();
       fetchRealTotal();
-      fetchBackendAlerts(true);
+      fetchStats();
+      fetchByCameraAlerts();
+      fetchBackendAlerts(currentPage, pageSize);
     }, 60_000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchEvidenceDates, fetchRealTotal]);
+  }, [fetchEvidenceDates, fetchRealTotal, fetchStats, fetchByCameraAlerts, currentPage, pageSize]);
 
-  // Merged alerts — WebSocket real-time additions + backend paged results
+  // Merged alerts — live WebSocket additions for current session + backend paged results
   const mergedAlerts = useMemo(() => {
-    // ws alerts = small set from App.tsx (real-time additions only)
-    // Filter ws alerts to match current server-side filters (so they appear correctly)
-    const wsFiltered = alerts.filter((a) => {
-      if (selectedDate) {
-        const keys = getAlertDateKeys(a.confirmedAt || a.createdAt);
-        if (!keys.includes(selectedDate)) return false;
-      }
-      if (selectedCamera !== 'ALL' && a.cameraId !== selectedCamera) return false;
-      if (selectedZone !== 'ALL' && a.zone !== selectedZone) return false;
-      if (selectedType !== 'ALL' && a.anomalyType !== selectedType) return false;
-      return true;
-    });
+    let list: AnomalyAlertEvent[] = [];
 
-    const rawList = [...wsFiltered, ...backendAlerts];
-    const uniqueMap = new Map<string, any>();
-    rawList.forEach((raw) => {
-      if (raw && raw.id) uniqueMap.set(raw.id, raw);
-    });
+    if (currentPage === 1) {
+      // On page 1: filter brand-new live session arrivals for active UI filters
+      const liveFiltered = liveSessionAlerts.filter((a) => {
+        if (selectedDate) {
+          const keys = getAlertDateKeys(a.confirmedAt || a.createdAt);
+          if (!keys.includes(selectedDate)) return false;
+        }
+        if (selectedCamera !== 'ALL' && a.cameraId !== selectedCamera) return false;
+        if (selectedZone !== 'ALL' && a.zone !== selectedZone) return false;
+        if (selectedType !== 'ALL' && a.anomalyType !== selectedType) return false;
+        if (selectedSeverity !== 'ALL' && a.severity !== selectedSeverity) return false;
+        if (selectedStatus !== 'ALL') {
+          if (selectedStatus === 'UNRESOLVED' && a.status === 'RESOLVED') return false;
+          if (selectedStatus === 'RESOLVED' && a.status !== 'RESOLVED') return false;
+        }
+        if (evidenceOnly && (!a.snapshotPath || !a.snapshotPath.trim())) return false;
+        return true;
+      });
 
-    return Array.from(uniqueMap.values())
+      // Deduplicate live session alerts against backendAlerts
+      const liveIds = new Set(liveFiltered.map((a) => a.id));
+      const backendWithoutLive = backendAlerts.filter((a) => !liveIds.has(a.id));
+      list = [...liveFiltered, ...backendWithoutLive];
+    } else {
+      // On Page 2, 3, etc.: strictly show the exact page from backend!
+      list = [...backendAlerts];
+    }
+
+    return list
       .filter((raw: any) => !deletedAlertIds.has(raw?.id))
       .map((raw: any) => {
         const a: AnomalyAlertEvent = {
@@ -1244,7 +1383,11 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         };
         return a;
       });
-  }, [alerts, backendAlerts, selectedDate, selectedCamera, selectedZone, selectedType, localStatuses, deletedAlertIds]);
+  }, [
+    currentPage, liveSessionAlerts, backendAlerts, selectedDate, selectedCamera,
+    selectedZone, selectedType, selectedSeverity, selectedStatus, evidenceOnly,
+    localStatuses, deletedAlertIds
+  ]);
 
   // Derived available dates combining backend discovery + in-memory alerts
   const availableDateOptions = useMemo(() => {
@@ -1473,95 +1616,30 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     return Array.from(types).sort();
   }, [alerts]);
 
-  // Filtered and sorted alerts — backend handles date/camera/zone/type/status/order.
-  // Client handles: search text, evidenceOnly, UNRESOLVED status, severity/confidence sort.
+  // Filtered alerts — backend already handles search, filters, pagination, and sort.
+  // Client only applies session-level deletions and local status overrides.
   const filteredAlerts = useMemo(() => {
-    return mergedAlerts
-      .filter((alert) => {
-        // UNRESOLVED is custom client logic (backend doesn't have this literal status)
-        if (selectedStatus === 'UNRESOLVED') {
-          const norm = (alert.status || 'NEW').toUpperCase();
-          if (norm === 'RESOLVED') return false;
-        }
+    return mergedAlerts.filter((alert) => {
+      if (deletedAlertIds.has(alert.id)) return false;
+      return true;
+    });
+  }, [mergedAlerts, deletedAlertIds]);
 
-        // Severity filter (client-side — no backend support)
-        if (selectedSeverity !== 'ALL') {
-          const sev = getSeverity(alert);
-          if (sev !== selectedSeverity) return false;
-        }
-
-        // Free-text search
-        if (searchQuery.trim()) {
-          const q = searchQuery.toLowerCase().trim();
-          const matchCam = (alert.cameraName || alert.cameraId).toLowerCase().includes(q);
-          const matchZone = (alert.zone || '').toLowerCase().includes(q);
-          const matchType = (alert.anomalyType || '').toLowerCase().includes(q);
-          const matchTrack = alert.trackId !== undefined && String(alert.trackId).includes(q);
-          const matchEmp = (alert.employeeName || '').toLowerCase().includes(q);
-          const matchMsg = (alert.alertMessage || '').toLowerCase().includes(q);
-          if (!matchCam && !matchZone && !matchType && !matchTrack && !matchEmp && !matchMsg) {
-            return false;
-          }
-        }
-
-        // Evidence photos only
-        if (evidenceOnly && (!alert.snapshotPath || !alert.snapshotPath.trim())) {
-          return false;
-        }
-
-        return true;
-      })
-      .sort((a, b) => {
-        const timeA = new Date(a.confirmedAt || a.createdAt).getTime() || 0;
-        const timeB = new Date(b.confirmedAt || b.createdAt).getTime() || 0;
-        if (sortOrder === 'severity') {
-          const diff = getSeverityRank(b) - getSeverityRank(a);
-          return diff !== 0 ? diff : timeB - timeA;
-        }
-        if (sortOrder === 'confidence') {
-          const diff = (b.confidence || 0) - (a.confidence || 0);
-          return diff !== 0 ? diff : timeB - timeA;
-        }
-        // asc/desc already sorted by backend — preserve backend order for speed
-        return timeB - timeA;
-      });
-  }, [
-    mergedAlerts,
-    evidenceOnly,
-    selectedSeverity,
-    selectedStatus,
-    searchQuery,
-    sortOrder,
-  ]);
-
-
-  // Total count of real captured snapshots
+  // Total count of real captured snapshots sourced from DB stats
   const totalWithEvidenceCount = useMemo(() => {
-    return mergedAlerts.filter((a) => Boolean(a.snapshotPath && a.snapshotPath.trim())).length;
-  }, [mergedAlerts]);
+    return dbStats?.evidencePhotos ?? totalCount;
+  }, [dbStats, totalCount]);
 
   // Dedicated metrics specifically for the currently selected calendar date
   const selectedDateMetrics = useMemo(() => {
-    if (!selectedDate) {
-      return {
-        hasDate: false,
-        totalEvents: mergedAlerts.length,
-        totalPhotos: totalWithEvidenceCount,
-      };
-    }
-    const forDate = mergedAlerts.filter((a) => {
-      const keys = getAlertDateKeys(a.confirmedAt || a.createdAt);
-      return keys.includes(selectedDate);
-    });
-    const photos = forDate.filter((a) => Boolean(a.snapshotPath && a.snapshotPath.trim()));
     return {
-      hasDate: true,
-      totalEvents: forDate.length,
-      totalPhotos: photos.length,
+      hasDate: Boolean(selectedDate),
+      totalEvents: dbStats?.dateCount ?? totalCount,
+      totalPhotos: dbStats?.evidencePhotos ?? totalCount,
     };
-  }, [selectedDate, mergedAlerts, totalWithEvidenceCount]);
+  }, [selectedDate, dbStats, totalCount]);
 
-  // Group filtered alerts per camera for the "By Camera" card stream view
+  // Group alerts per camera for the "By Camera" card stream view
   const cameraGroups = useMemo(() => {
     const map = new Map<
       string,
@@ -1570,30 +1648,102 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         cameraName: string;
         zone: string;
         isOnline: boolean;
+        totalViolations: number;
         alerts: AnomalyAlertEvent[];
       }
     >();
 
-    filteredAlerts.forEach((alert) => {
+    // 1. Initialize all facility cameras matching active camera and zone filters
+    const visibleCameras = selectedCamera !== 'ALL'
+      ? cameras.filter((c) => c.id === selectedCamera)
+      : cameras.filter((c) => selectedZone === 'ALL' || c.zone === selectedZone);
+
+    visibleCameras.forEach((cam) => {
+      const dbCount = dbStats?.cameraCounts?.[cam.id] ?? 0;
+      map.set(cam.id, {
+        cameraId: cam.id,
+        cameraName: cam.name || cam.id,
+        zone: cam.zone || 'General Facility',
+        isOnline: cam.status === 'ONLINE',
+        totalViolations: dbCount,
+        alerts: [],
+      });
+    });
+
+    // 2. Select alert source:
+    // If viewing ALL cameras in By Camera mode, use balanced byCameraAlerts + live arrivals.
+    // If viewing single camera filter, use filteredAlerts (full pagination).
+    const isViewingAllInByCamera = selectedCamera === 'ALL';
+    const baseSource = isViewingAllInByCamera ? byCameraAlerts : filteredAlerts;
+
+    // Filter live session arrivals for active UI date/zone/type filters
+    const liveForFilter = liveSessionAlerts.filter((a) => {
+      if (deletedAlertIds.has(a.id)) return false;
+      if (selectedDate) {
+        const keys = getAlertDateKeys(a.confirmedAt || a.createdAt);
+        if (!keys.includes(selectedDate)) return false;
+      }
+      if (selectedZone !== 'ALL' && a.zone !== selectedZone) return false;
+      if (selectedType !== 'ALL' && a.anomalyType !== selectedType) return false;
+      if (selectedSeverity !== 'ALL' && a.severity !== selectedSeverity) return false;
+      if (evidenceOnly && (!a.snapshotPath || !a.snapshotPath.trim())) return false;
+      return true;
+    });
+
+    const liveIds = new Set(liveForFilter.map((a) => a.id));
+    const combined = [...liveForFilter, ...baseSource.filter((a) => !liveIds.has(a.id) && !deletedAlertIds.has(a.id))];
+
+    combined.forEach((raw: any) => {
+      const alert: AnomalyAlertEvent = {
+        ...raw,
+        cameraId: raw.cameraId || raw.camera_id || '',
+        cameraName: raw.cameraName || raw.camera_name || raw.cameraId || raw.camera_id || '',
+        eventCategory: raw.eventCategory || raw.event_category || 'VIOLATION',
+        anomalyType: raw.anomalyType || raw.anomaly_type || 'ANOMALY',
+        trackId: raw.trackId ?? raw.track_id,
+        employeeId: raw.employeeId || raw.employee_id || null,
+        employeeName: raw.employeeName || raw.employee_name || null,
+        alertMessage: raw.alertMessage || raw.alert_message || null,
+        confirmedAt: raw.confirmedAt || raw.confirmed_at || raw.createdAt || raw.created_at || raw.timestamp,
+        createdAt: raw.createdAt || raw.created_at || raw.confirmedAt || raw.confirmed_at || raw.timestamp,
+        snapshotPath: raw.snapshotPath || raw.snapshot_path || null,
+        status: localStatuses[raw.id] || raw.status || 'NEW',
+      };
+
       const camId = alert.cameraId;
       if (!map.has(camId)) {
         const camObj = cameras.find((c) => c.id === camId);
+        const dbCount = dbStats?.cameraCounts?.[camId] ?? 0;
         map.set(camId, {
           cameraId: camId,
           cameraName: alert.cameraName || camObj?.name || camId,
           zone: alert.zone || camObj?.zone || 'General Facility',
           isOnline: camObj ? camObj.status === 'ONLINE' : true,
+          totalViolations: dbCount,
           alerts: [],
         });
       }
-      map.get(camId)!.alerts.push(alert);
+
+      const targetGroup = map.get(camId)!;
+      if (!isViewingAllInByCamera || targetGroup.alerts.length < 6) {
+        targetGroup.alerts.push(alert);
+      }
     });
 
-    // Natural sort by camera name
-    return Array.from(map.values()).sort((a, b) =>
-      a.cameraName.localeCompare(b.cameraName, undefined, { numeric: true })
-    );
-  }, [filteredAlerts, cameras]);
+    // 3. Sort: cameras with violations first (most violations in DB first), then natural sort by name
+    return Array.from(map.values()).sort((a, b) => {
+      const countA = a.totalViolations > 0 ? a.totalViolations : a.alerts.length;
+      const countB = b.totalViolations > 0 ? b.totalViolations : b.alerts.length;
+      if (countA > 0 && countB === 0) return -1;
+      if (countA === 0 && countB > 0) return 1;
+      if (countA !== countB) return countB - countA;
+      return a.cameraName.localeCompare(b.cameraName, undefined, { numeric: true });
+    });
+  }, [
+    filteredAlerts, byCameraAlerts, liveSessionAlerts, cameras, selectedCamera,
+    selectedZone, selectedDate, selectedType, selectedSeverity, evidenceOnly,
+    dbStats, deletedAlertIds, localStatuses
+  ]);
 
   // Selected camera details for camera banner (if single camera filter applied)
   const selectedCameraMeta = useMemo(() => {
@@ -1610,17 +1760,19 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     };
   }, [selectedCamera, cameras, mergedAlerts]);
 
-  // Summary card counts
+  // Summary card counts — strictly sourced from database via getStats()
   const summary = useMemo(() => {
-    const total = mergedAlerts.length;
-    const today = mergedAlerts.filter((a) => parseDateKey(a.confirmedAt || a.createdAt) === todayKey).length;
-    const highSeverity = mergedAlerts.filter((a) => {
-      const s = getSeverity(a);
-      return s === 'CRITICAL' || s === 'HIGH';
-    }).length;
-    const unresolved = mergedAlerts.filter((a) => (a.status || 'NEW').toUpperCase() !== 'RESOLVED').length;
-    return { total, today, highSeverity, unresolved };
-  }, [mergedAlerts, todayKey]);
+    const total = dbStats?.total ?? totalCount;
+    const today = dbStats?.today ?? 0;
+    const dateCount = dbStats?.dateCount ?? total;
+    const evidencePhotos = dbStats?.evidencePhotos ?? total;
+    const highSeverity = dbStats?.highSeverity ?? 0;
+    const critical = dbStats?.critical ?? 0;
+    const high = dbStats?.high ?? 0;
+    const unresolved = dbStats?.unresolved ?? 0;
+    const resolved = dbStats?.resolved ?? 0;
+    return { total, today, dateCount, evidencePhotos, highSeverity, critical, high, unresolved, resolved };
+  }, [dbStats, totalCount]);
 
   // Status Change Handler
   const handleStatusUpdate = async (id: string, newStatus: string) => {
@@ -1634,10 +1786,10 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
       if (inspectAlert && inspectAlert.id === id) {
         setInspectAlert((prev) => (prev ? { ...prev, status: newStatus } : null));
       }
+      fetchStats();
       onStatusUpdate?.(id, newStatus);
     } catch (e) {
       console.error('Failed to update anomaly status:', e);
-      throw e;
     } finally {
       setResolvingId(null);
     }
@@ -1658,6 +1810,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
       }
       onDeleteAlert?.(id);
       fetchEvidenceDates();
+      fetchStats();
       soundService.playTactileBlip(550, 0.04);
     } catch (e) {
       console.error('Failed to delete incident:', e);
@@ -1756,10 +1909,14 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         {/* Card 1: Evidence Photos */}
         <div
           onClick={() => {
-            setEvidenceOnly(true);
-            resetFilters();
+            soundService.playTactileBlip(750, 0.02);
+            setEvidenceOnly((prev) => !prev);
           }}
-          className="group relative cursor-pointer overflow-hidden rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#0f0f12] p-4 transition-all hover:border-[#f97316]/50 shadow-sm"
+          className={`group relative cursor-pointer overflow-hidden rounded-2xl border p-4 transition-all shadow-sm ${
+            evidenceOnly
+              ? 'border-[#f97316] bg-[#f97316]/10 dark:bg-[#f97316]/15 ring-1 ring-[#f97316]/40'
+              : 'border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#0f0f12] hover:border-[#f97316]/50'
+          }`}
         >
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">
@@ -1770,38 +1927,46 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             </div>
           </div>
           <div className="mt-2 text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-            {totalWithEvidenceCount}
+            {summary.evidencePhotos}
           </div>
           <p className="mt-1 text-[11px] font-mono text-[#f97316]">
             {realTotalCount !== null ? realTotalCount : summary.total} total events captured
           </p>
         </div>
 
-        {/* Card 2: Today */}
+        {/* Card 2: Today / Selected Date */}
         <div
-          onClick={() => handleDatePreset('TODAY')}
-          className="group relative cursor-pointer overflow-hidden rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#0f0f12] p-4 transition-all hover:border-[#06b6d4]/50 shadow-sm"
+          onClick={() => handleDatePreset(selectedDate === todayKey ? 'ALL' : 'TODAY')}
+          className={`group relative cursor-pointer overflow-hidden rounded-2xl border p-4 transition-all shadow-sm ${
+            datePreset === 'TODAY'
+              ? 'border-[#06b6d4] bg-[#06b6d4]/10 dark:bg-[#06b6d4]/15 ring-1 ring-[#06b6d4]/40'
+              : 'border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#0f0f12] hover:border-[#06b6d4]/50'
+          }`}
         >
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">
-              Today
+              {selectedDate && selectedDate !== todayKey ? formatRegisteredDate(selectedDate) : 'Today'}
             </span>
             <div className="rounded-lg bg-[#06b6d4]/10 p-2 text-[#06b6d4]">
               <Calendar className="h-4 w-4" />
             </div>
           </div>
           <div className="mt-2 text-2xl sm:text-3xl font-bold tracking-tight text-[#06b6d4]">
-            {summary.today}
+            {selectedDate && selectedDate !== todayKey ? summary.dateCount : summary.today}
           </div>
           <p className="mt-1 text-[11px] font-mono text-slate-500 dark:text-slate-400">
-            Violations recorded today
+            {selectedDate && selectedDate !== todayKey ? 'Violations on selected date' : 'Violations recorded today'}
           </p>
         </div>
 
         {/* Card 3: High Severity */}
         <div
-          onClick={() => setSelectedSeverity('HIGH')}
-          className="group relative cursor-pointer overflow-hidden rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#0f0f12] p-4 transition-all hover:border-[#ef4444]/50 shadow-sm"
+          onClick={() => setSelectedSeverity((prev) => (prev === 'HIGH' ? 'ALL' : 'HIGH'))}
+          className={`group relative cursor-pointer overflow-hidden rounded-2xl border p-4 transition-all shadow-sm ${
+            selectedSeverity === 'HIGH'
+              ? 'border-[#ef4444] bg-[#ef4444]/10 dark:bg-[#ef4444]/15 ring-1 ring-[#ef4444]/40'
+              : 'border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#0f0f12] hover:border-[#ef4444]/50'
+          }`}
         >
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">
@@ -1815,7 +1980,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
             {summary.highSeverity}
           </div>
           <p className="mt-1 text-[11px] font-mono text-slate-500 dark:text-slate-400">
-            Critical & High hazards
+            {summary.critical} Critical · {summary.high} High
           </p>
         </div>
 
@@ -2526,8 +2691,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
 
           {/* Match Count Badge */}
           <div className="ml-auto text-xs font-mono text-slate-500">
-            Showing <span className="font-bold text-slate-900 dark:text-white">{filteredAlerts.length}</span> {evidenceOnly ? 'evidence photos' : 'events'}
-            {hasMore && <span className="ml-1 text-slate-400">(more available)</span>}
+            Showing <span className="font-bold text-slate-900 dark:text-white">{totalCount > 0 ? (currentPage - 1) * pageSize + 1 : 0}–{Math.min(currentPage * pageSize, totalCount)}</span> of <span className="font-bold text-slate-900 dark:text-white">{totalCount}</span> {evidenceOnly ? 'evidence photos' : 'events'}
           </div>
         </div>
       </section>
@@ -2709,8 +2873,33 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
 
                   {/* Header Badges & Actions */}
                   <div className="flex items-center gap-2.5 self-start sm:self-auto">
-                    <span className="inline-flex items-center gap-1 rounded-xl bg-[#f97316]/10 border border-[#f97316]/25 px-3 py-1 text-xs font-mono font-bold text-[#f97316]">
-                      {group.alerts.length} Evidence {group.alerts.length === 1 ? 'Photo' : 'Photos'}
+                    {group.totalViolations > 0 && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-xl px-2.5 py-1 text-xs font-mono font-bold bg-amber-500/10 border border-amber-500/25 text-amber-500"
+                        title={`Total violations recorded today for ${group.cameraName} in database`}
+                      >
+                        {group.totalViolations} Recorded Today
+                      </span>
+                    )}
+
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-xl px-3 py-1 text-xs font-mono font-bold ${
+                        group.alerts.length > 0
+                          ? 'bg-[#f97316]/10 border border-[#f97316]/25 text-[#f97316]'
+                          : group.totalViolations > 0
+                          ? 'bg-slate-500/10 border border-slate-500/20 text-slate-400'
+                          : !group.isOnline
+                          ? 'bg-red-500/10 border border-red-500/25 text-red-500'
+                          : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+                      }`}
+                    >
+                      {group.alerts.length > 0
+                        ? `${group.alerts.length} Evidence Photo${group.alerts.length > 1 ? 's' : ''}`
+                        : group.totalViolations > 0
+                        ? 'Photos on Other Pages'
+                        : !group.isOnline
+                        ? 'Camera Stream Offline'
+                        : '0 Violations • Compliant'}
                     </span>
 
                     <button
@@ -2734,23 +2923,80 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
                   </div>
                 </div>
 
-                {/* Evidence Photos Grid: Cards One by One */}
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 mt-4">
-                  {group.alerts.map((alert) => (
-                    <IncidentEvidenceCard
-                      key={alert.id}
-                      alert={alert}
-                      onInspect={() => setInspectAlert(alert)}
-                      onQuickResolve={() => handleStatusUpdate(alert.id, 'RESOLVED')}
-                      onDelete={() => {
-                        if (window.confirm('Permanently delete this incident and its stored evidence photo from disk?')) {
-                          handleDeleteIncident(alert.id);
-                        }
+                {/* Evidence Photos Grid: Cards One by One OR Clean Compliant State */}
+                {group.alerts.length > 0 ? (
+                  <>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 mt-4">
+                      {group.alerts.map((alert) => (
+                        <IncidentEvidenceCard
+                          key={alert.id}
+                          alert={alert}
+                          onInspect={() => setInspectAlert(alert)}
+                          onQuickResolve={() => handleStatusUpdate(alert.id, 'RESOLVED')}
+                          onDelete={() => {
+                            if (window.confirm('Permanently delete this incident and its stored evidence photo from disk?')) {
+                              handleDeleteIncident(alert.id);
+                            }
+                          }}
+                          isResolving={resolvingId === alert.id}
+                        />
+                      ))}
+                    </div>
+
+                    {group.totalViolations > group.alerts.length && (
+                      <div className="mt-3 flex items-center justify-between pt-3 border-t border-black/[0.06] dark:border-white/[0.06] text-xs font-mono">
+                        <span className="text-slate-500">
+                          Showing latest <strong>{group.alerts.length}</strong> of <strong>{group.totalViolations}</strong> violations recorded today
+                        </span>
+                        <button
+                          onClick={() => {
+                            setSelectedCamera(group.cameraId);
+                            setCurrentPage(1);
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 font-bold transition cursor-pointer"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          <span>View All {group.totalViolations} Photos for {group.cameraName}</span>
+                        </button>
+                      </div>
+                    )}
+                  </>
+                ) : group.totalViolations > 0 ? (
+                  <div className="mt-4 py-4 px-4 rounded-xl border border-dashed border-amber-500/20 bg-amber-500/[0.03] flex flex-col sm:flex-row items-center justify-between gap-3 text-xs font-mono">
+                    <div className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                      <Layers className="h-4 w-4 text-amber-500 shrink-0" />
+                      <span>
+                        <strong>{group.totalViolations}</strong> violations recorded today for {group.cameraName} across earlier/later pages.
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setSelectedCamera(group.cameraId);
+                        setCurrentPage(1);
                       }}
-                      isResolving={resolvingId === alert.id}
-                    />
-                  ))}
-                </div>
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 font-bold transition cursor-pointer shrink-0"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      <span>View All {group.totalViolations} Photos for {group.cameraName}</span>
+                    </button>
+                  </div>
+                ) : !group.isOnline ? (
+                  <div className="mt-4 py-4 px-4 rounded-xl border border-dashed border-red-500/20 bg-red-500/[0.02] flex flex-col sm:flex-row items-center justify-between gap-2 text-xs font-mono text-slate-500">
+                    <span className="flex items-center gap-2 text-red-500">
+                      <CameraOff className="h-4 w-4 shrink-0" />
+                      <span>Camera Stream Offline · RTSP source disconnected or unreachable</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">0 Violations Detected (Offline)</span>
+                  </div>
+                ) : (
+                  <div className="mt-4 py-4 px-4 rounded-xl border border-dashed border-black/10 dark:border-white/10 bg-black/[0.01] dark:bg-white/[0.01] flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500 font-mono">
+                    <span className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                      <span>0 violations recorded today • Monitored node fully compliant</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">Continuous AI Stream Active</span>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -2868,11 +3114,22 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
                         <div className="flex items-center gap-2">
                           <SevIcon className={`h-4 w-4 shrink-0 ${sevTheme.text}`} />
                           <div>
-                            <span className="font-bold text-slate-900 dark:text-white">
-                              {alert.employeeName && alert.employeeName !== 'Unidentified person'
-                                ? `${alert.employeeName} has not worn ${formatAnomalyLabel(alert.anomalyType).toLowerCase()}`
-                                : alert.alertMessage || formatAnomalyLabel(alert.anomalyType)}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-bold text-slate-900 dark:text-white">
+                                {alert.employeeName && alert.employeeName !== 'Unidentified person'
+                                  ? `${alert.employeeName} has not worn ${formatAnomalyLabel(alert.anomalyType).toLowerCase()}`
+                                  : alert.alertMessage || formatAnomalyLabel(alert.anomalyType)}
+                              </span>
+                              {(() => {
+                                const d = parseIsoToUtc(alert.confirmedAt || alert.createdAt);
+                                const isRecent = d && (Date.now() - d.getTime()) < 10 * 60 * 1000;
+                                return isRecent ? (
+                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-red-600/90 text-white animate-pulse">
+                                    JUST NOW
+                                  </span>
+                                ) : null;
+                              })()}
+                            </div>
                             <div className="text-[10px] font-mono text-slate-500 flex items-center gap-1.5 mt-0.5">
                               <span>Conf: {Math.round((alert.confidence || 0) * 100)}%</span>
                               {alert.employeeName && alert.employeeName !== 'Unidentified person' ? (
@@ -2965,20 +3222,135 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         </div>
       )}
       
-      {/* ─── Load More ──────────────────────────────────────────────────── */}
-      {hasMore && !isFetchingBackend && filteredAlerts.length > 0 && (
-        <div className="flex justify-center mt-6">
-          <button
-            onClick={() => fetchBackendAlerts(false)}
-            className="flex items-center gap-2 rounded-xl border border-orange-500/30 bg-orange-500/10 hover:bg-orange-500/20 px-6 py-3 text-sm font-semibold text-orange-500 dark:text-orange-400 transition cursor-pointer shadow-sm"
-          >
-            Load More Events
-          </button>
-        </div>
-      )}
-      {isFetchingBackend && (
-        <div className="flex justify-center mt-6">
-          <span className="text-xs font-mono text-slate-400 animate-pulse">Loading…</span>
+      {/* ─── Modern Server-Side Pagination Bar ────────────────────────────── */}
+      {totalCount > 0 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 py-4 px-4 sm:px-6 rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#0f0f12] shadow-sm">
+          {/* Left: Range and Items Per Page */}
+          <div className="flex items-center gap-3 text-xs font-mono text-slate-500 dark:text-slate-400">
+            <span>
+              Showing <strong className="text-slate-900 dark:text-white">{(currentPage - 1) * pageSize + 1}</strong>–<strong className="text-slate-900 dark:text-white">{Math.min(currentPage * pageSize, totalCount)}</strong> of <strong className="text-slate-900 dark:text-white">{totalCount}</strong>
+            </span>
+            <span className="text-slate-300 dark:text-slate-700">|</span>
+            <div className="flex items-center gap-1.5">
+              <span>Per page:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  const newSize = Number(e.target.value);
+                  setPageSize(newSize);
+                  setCurrentPage(1);
+                  fetchBackendAlerts(1, newSize);
+                }}
+                className="rounded-lg border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-black/40 px-2 py-1 text-xs text-slate-800 dark:text-slate-200 outline-none cursor-pointer"
+              >
+                <option value={12}>12</option>
+                <option value={24}>24</option>
+                <option value={48}>48</option>
+              </select>
+            </div>
+            {isFetchingBackend && (
+              <span className="text-xs font-mono text-orange-500 animate-pulse ml-2">Loading…</span>
+            )}
+          </div>
+
+          {/* Right: Page Navigation Buttons */}
+          <div className="flex items-center gap-1.5 flex-wrap justify-center">
+            {/* First Page */}
+            <button
+              onClick={() => {
+                if (currentPage > 1) {
+                  setCurrentPage(1);
+                  fetchBackendAlerts(1, pageSize);
+                }
+              }}
+              disabled={currentPage <= 1 || isFetchingBackend}
+              className="px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-white/[0.04] text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
+              title="First Page"
+            >
+              «
+            </button>
+
+            {/* Previous Page */}
+            <button
+              onClick={() => {
+                if (currentPage > 1) {
+                  const prevPage = currentPage - 1;
+                  setCurrentPage(prevPage);
+                  fetchBackendAlerts(prevPage, pageSize);
+                }
+              }}
+              disabled={currentPage <= 1 || isFetchingBackend}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-white/[0.04] text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
+              title="Previous Page"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Prev</span>
+            </button>
+
+            {/* Page Number Pills */}
+            {getPageNumbers(currentPage, totalPages).map((p, idx) => {
+              if (p === '...') {
+                return (
+                  <span key={`ellipsis-${idx}`} className="px-1.5 text-xs text-slate-400">
+                    …
+                  </span>
+                );
+              }
+              const pageNum = p as number;
+              const isActive = pageNum === currentPage;
+              return (
+                <button
+                  key={`page-${pageNum}`}
+                  onClick={() => {
+                    if (pageNum !== currentPage) {
+                      setCurrentPage(pageNum);
+                      fetchBackendAlerts(pageNum, pageSize);
+                    }
+                  }}
+                  disabled={isFetchingBackend}
+                  className={`min-w-[32px] h-8 rounded-lg text-xs font-mono font-semibold transition cursor-pointer ${
+                    isActive
+                      ? 'bg-[#f97316] text-white shadow-xs'
+                      : 'border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-white/[0.04] text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10'
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              );
+            })}
+
+            {/* Next Page */}
+            <button
+              onClick={() => {
+                if (currentPage < totalPages) {
+                  const nextPage = currentPage + 1;
+                  setCurrentPage(nextPage);
+                  fetchBackendAlerts(nextPage, pageSize);
+                }
+              }}
+              disabled={currentPage >= totalPages || isFetchingBackend}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-white/[0.04] text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
+              title="Next Page"
+            >
+              <span className="hidden sm:inline">Next</span>
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+
+            {/* Last Page */}
+            <button
+              onClick={() => {
+                if (currentPage < totalPages) {
+                  setCurrentPage(totalPages);
+                  fetchBackendAlerts(totalPages, pageSize);
+                }
+              }}
+              disabled={currentPage >= totalPages || isFetchingBackend}
+              className="px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-slate-50 dark:bg-white/[0.04] text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
+              title="Last Page"
+            >
+              »
+            </button>
+          </div>
         </div>
       )}
 

@@ -7,6 +7,9 @@ export interface AnomalyFilters {
   cameraId?: string;
   zone?: string;
   anomalyType?: string;
+  severity?: string;
+  evidenceOnly?: boolean;
+  search?: string;
   status?: string;
   date?: string;
   dateFrom?: string;
@@ -16,19 +19,42 @@ export interface AnomalyFilters {
   offset?: number;
 }
 
+export interface AnomalyStats {
+  total: number;
+  today: number;
+  dateCount: number;
+  evidencePhotos: number;
+  highSeverity: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  unresolved: number;
+  resolved: number;
+  cameraCounts?: Record<string, number>;
+}
+
 export const anomalyService = {
   async getAnomalies(filters: AnomalyFilters = {}): Promise<AnomalyAlertEvent[]> {
+    const paginated = await this.getAnomaliesPaginated(filters);
+    return paginated.items;
+  },
+
+  async getAnomaliesPaginated(filters: AnomalyFilters = {}): Promise<{ items: AnomalyAlertEvent[]; total: number }> {
     const params = new URLSearchParams();
-    if (filters.cameraId) params.append('cameraId', filters.cameraId);
+    if (filters.cameraId && filters.cameraId !== 'ALL') params.append('cameraId', filters.cameraId);
     if (filters.zone && filters.zone !== 'ALL') params.append('zone', filters.zone);
     if (filters.anomalyType && filters.anomalyType !== 'ALL') params.append('anomalyType', filters.anomalyType);
+    if (filters.severity && filters.severity !== 'ALL') params.append('severity', filters.severity);
+    if (filters.evidenceOnly) params.append('evidenceOnly', 'true');
+    if (filters.search && filters.search.trim()) params.append('search', filters.search.trim());
     if (filters.status && filters.status !== 'ALL') params.append('status', filters.status);
     if (filters.date) params.append('date', filters.date);
     if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
     if (filters.dateTo) params.append('dateTo', filters.dateTo);
     if (filters.order) params.append('order', filters.order);
     if (filters.limit) params.append('limit', String(filters.limit));
-    if (filters.offset) params.append('offset', String(filters.offset));
+    if (filters.offset !== undefined) params.append('offset', String(filters.offset));
 
     const qs = params.toString();
     const path = `/anomalies${qs ? `?${qs}` : ''}`;
@@ -36,7 +62,10 @@ export const anomalyService = {
     if (!res.ok) {
       throw new Error(`Failed to load anomalies: ${res.statusText}`);
     }
-    return res.json();
+    const totalHeader = res.headers.get('X-Total-Count');
+    const total = totalHeader ? parseInt(totalHeader, 10) : 0;
+    const items: AnomalyAlertEvent[] = await res.json();
+    return { items, total: Number.isNaN(total) ? items.length : total };
   },
 
   async getEvidenceDates(): Promise<{ date: string; totalAlerts: number; evidencePhotos: number }[]> {
@@ -49,7 +78,23 @@ export const anomalyService = {
     }
   },
 
-  /** Returns the real total count from the DB (no pagination limit). */
+  /** Returns balanced recent anomalies partitioned per camera for By Camera view. */
+  async getByCameraRecent(filters: { date?: string; limitPerCamera?: number; evidenceOnly?: boolean } = {}): Promise<AnomalyAlertEvent[]> {
+    try {
+      const params = new URLSearchParams();
+      if (filters.date) params.append('date', filters.date);
+      if (filters.limitPerCamera) params.append('limit_per_camera', String(filters.limitPerCamera));
+      if (filters.evidenceOnly) params.append('evidenceOnly', 'true');
+      const qs = params.toString();
+      const res = await apiFetch(`/anomalies/by-camera-recent${qs ? `?${qs}` : ''}`);
+      if (!res.ok) return [];
+      return await res.json();
+    } catch {
+      return [];
+    }
+  },
+
+  /** Returns real DB total count (unfiltered, all-time). */
   async getTotal(): Promise<number> {
     try {
       const res = await apiFetch('/anomalies/total');
@@ -58,6 +103,33 @@ export const anomalyService = {
       return typeof data.total === 'number' ? data.total : 0;
     } catch {
       return 0;
+    }
+  },
+
+  /** Returns real DB counts for all KPI summary cards with active date/filter support. */
+  async getStats(filters: { date?: string; cameraId?: string; zone?: string; anomalyType?: string } = {}): Promise<AnomalyStats> {
+    try {
+      const params = new URLSearchParams();
+      if (filters.date) params.append('date', filters.date);
+      if (filters.cameraId && filters.cameraId !== 'ALL') params.append('cameraId', filters.cameraId);
+      if (filters.zone && filters.zone !== 'ALL') params.append('zone', filters.zone);
+      if (filters.anomalyType && filters.anomalyType !== 'ALL') params.append('anomalyType', filters.anomalyType);
+      const qs = params.toString();
+      const res = await apiFetch(`/anomalies/stats${qs ? `?${qs}` : ''}`);
+      if (!res.ok) {
+        return {
+          total: 0, today: 0, dateCount: 0, evidencePhotos: 0,
+          highSeverity: 0, critical: 0, high: 0, medium: 0, low: 0,
+          unresolved: 0, resolved: 0
+        };
+      }
+      return await res.json();
+    } catch {
+      return {
+        total: 0, today: 0, dateCount: 0, evidencePhotos: 0,
+        highSeverity: 0, critical: 0, high: 0, medium: 0, low: 0,
+        unresolved: 0, resolved: 0
+      };
     }
   },
 

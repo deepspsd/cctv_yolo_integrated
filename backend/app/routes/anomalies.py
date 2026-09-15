@@ -8,7 +8,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc, asc
+from sqlalchemy import select, func, desc, asc, case, or_
 from jose import JWTError
 
 from app.database import get_db, AsyncSessionLocal
@@ -70,7 +70,9 @@ def to_utc_iso(dt: Optional[datetime]) -> Optional[str]:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.isoformat()
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 def to_ist_str(dt: Optional[datetime], fmt: str = "%d %b %Y, %I:%M:%S %p IST") -> Optional[str]:
     if not dt:
@@ -99,8 +101,8 @@ def compute_severity(anomaly_type: str, category: str) -> str:
 def format_anomaly(evt: AnomalyEvent, camera_name: Optional[str] = None, employee_name: Optional[str] = None) -> dict:
     c_name = camera_name or (evt.camera.name if getattr(evt, "camera", None) else None) or evt.camera_id
     e_name = employee_name or (evt.employee.name if getattr(evt, "employee", None) else None)
-    display_status = evt.status
-    if display_status == "CONFIRMED":
+    display_status = (evt.status or "").upper()
+    if display_status in ("CONFIRMED", "ENDED", "ACTIVE"):
         display_status = "NEW"
 
     ppe_friendly_names = {
@@ -191,9 +193,13 @@ async def authenticate_request(
 
 @router.get("", response_model=List[AnomalyEventResponse])
 async def list_anomalies(
+    response: Response,
     camera_id: Optional[str] = Query(None, alias="cameraId"),
     zone: Optional[str] = None,
     anomaly_type: Optional[str] = Query(None, alias="anomalyType"),
+    severity: Optional[str] = None,
+    evidence_only: Optional[bool] = Query(None, alias="evidenceOnly"),
+    search: Optional[str] = None,
     status: Optional[str] = None,
     date: Optional[str] = None,
     date_from: Optional[datetime] = Query(None, alias="dateFrom"),
@@ -208,10 +214,12 @@ async def list_anomalies(
     """
     List historical anomaly events with multi-criteria filtering and camera join.
     Strictly scoped to the authenticated user. Excludes PERSON_DETECTED.
+    Returns total filtered count via X-Total-Count header.
     """
     user_role = (getattr(user, "role", "") or "").upper()
     is_admin = user_role in ("ADMINISTRATOR", "ADMIN", "FACILITY_MANAGER", "SECURITY_OFFICER")
 
+    # Base select query
     query = select(
         AnomalyEvent,
         Camera.name.label("camera_name"),
@@ -224,22 +232,67 @@ async def list_anomalies(
         AnomalyEvent.anomaly_type != "PERSON_DETECTED"
     )
 
+    # Base count query matching exact same joins and base filter
+    count_query = select(func.count(AnomalyEvent.id)).join(
+        Camera, AnomalyEvent.camera_id == Camera.id
+    ).outerjoin(
+        Employee, AnomalyEvent.employee_id == Employee.id
+    ).where(
+        AnomalyEvent.anomaly_type != "PERSON_DETECTED"
+    )
+
     if not is_admin:
         query = query.where((AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id))
+        count_query = count_query.where((AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id))
 
     if camera_id:
         query = query.where(AnomalyEvent.camera_id == camera_id)
+        count_query = count_query.where(AnomalyEvent.camera_id == camera_id)
     if employee_id:
         query = query.where(AnomalyEvent.employee_id == employee_id)
+        count_query = count_query.where(AnomalyEvent.employee_id == employee_id)
     if zone and zone.upper() != "ALL":
         query = query.where(AnomalyEvent.zone == zone.strip())
+        count_query = count_query.where(AnomalyEvent.zone == zone.strip())
     if anomaly_type and anomaly_type.upper() != "ALL":
         query = query.where(AnomalyEvent.anomaly_type == anomaly_type.strip())
+        count_query = count_query.where(AnomalyEvent.anomaly_type == anomaly_type.strip())
     if status and status.upper() != "ALL":
-        if status.upper() == "NEW":
-            query = query.where(AnomalyEvent.status.in_(["NEW", "CONFIRMED"]))
+        if status.upper() == "UNRESOLVED":
+            query = query.where(AnomalyEvent.status != "RESOLVED")
+            count_query = count_query.where(AnomalyEvent.status != "RESOLVED")
+        elif status.upper() == "NEW":
+            query = query.where(AnomalyEvent.status.in_(["NEW", "CONFIRMED", "ENDED", "ACTIVE"]))
+            count_query = count_query.where(AnomalyEvent.status.in_(["NEW", "CONFIRMED", "ENDED", "ACTIVE"]))
         else:
             query = query.where(AnomalyEvent.status == status.strip().upper())
+            count_query = count_query.where(AnomalyEvent.status == status.strip().upper())
+
+    if severity and severity.upper() != "ALL":
+        sev_list = [s.strip().upper() for s in severity.split(",") if s.strip()]
+        if len(sev_list) == 1:
+            query = query.where(AnomalyEvent.severity == sev_list[0])
+            count_query = count_query.where(AnomalyEvent.severity == sev_list[0])
+        elif len(sev_list) > 1:
+            query = query.where(AnomalyEvent.severity.in_(sev_list))
+            count_query = count_query.where(AnomalyEvent.severity.in_(sev_list))
+
+    if evidence_only:
+        cond = (AnomalyEvent.snapshot_path.isnot(None)) & (AnomalyEvent.snapshot_path != "")
+        query = query.where(cond)
+        count_query = count_query.where(cond)
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        search_cond = or_(
+            Camera.name.ilike(term),
+            Camera.id.ilike(term),
+            AnomalyEvent.zone.ilike(term),
+            AnomalyEvent.anomaly_type.ilike(term),
+            Employee.name.ilike(term),
+        )
+        query = query.where(search_cond)
+        count_query = count_query.where(search_cond)
 
     if date:
         try:
@@ -247,13 +300,22 @@ async def list_anomalies(
             start_dt = datetime.combine(parsed_date, time.min)
             end_dt = datetime.combine(parsed_date, time.max)
             query = query.where(AnomalyEvent.created_at >= start_dt, AnomalyEvent.created_at <= end_dt)
+            count_query = count_query.where(AnomalyEvent.created_at >= start_dt, AnomalyEvent.created_at <= end_dt)
         except ValueError:
             pass
 
     if date_from:
         query = query.where(AnomalyEvent.created_at >= date_from)
+        count_query = count_query.where(AnomalyEvent.created_at >= date_from)
     if date_to:
         query = query.where(AnomalyEvent.created_at <= date_to)
+        count_query = count_query.where(AnomalyEvent.created_at <= date_to)
+
+    # Calculate total count for pagination
+    count_res = await db.execute(count_query)
+    total_count = count_res.scalar() or 0
+    response.headers["X-Total-Count"] = str(total_count)
+    response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
 
     if order == "asc":
         query = query.order_by(asc(AnomalyEvent.created_at))
@@ -291,6 +353,187 @@ async def get_anomaly_total(
     result = await db.execute(count_q)
     total = result.scalar_one_or_none() or 0
     return {"total": total}
+
+@router.get("/stats")
+async def get_anomaly_stats(
+    date: Optional[str] = None,
+    camera_id: Optional[str] = Query(None, alias="cameraId"),
+    zone: Optional[str] = None,
+    anomaly_type: Optional[str] = Query(None, alias="anomalyType"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns real DB counts for all KPI summary cards:
+    - total: events in DB for selected date / filters (or all-time if no date)
+    - today: events created today in IST (UTC+5:30)
+    - dateCount: events on the selected date
+    - evidencePhotos: events with photo proof
+    - highSeverity: CRITICAL + HIGH severity count
+    - critical: CRITICAL severity count
+    - high: HIGH severity count
+    - medium: MEDIUM severity count
+    - low: LOW severity count
+    - unresolved: status != 'RESOLVED'
+    - resolved: status == 'RESOLVED'
+    All counts are scoped to authenticated user's cameras.
+    """
+    user_role = (getattr(user, "role", "") or "").upper()
+    is_admin = user_role in ("ADMINISTRATOR", "ADMIN", "FACILITY_MANAGER", "SECURITY_OFFICER")
+
+    def scoped(q):
+        if not is_admin:
+            q = q.where((AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id))
+        return q
+
+    # Common base filters with single-query aggregation
+    base_q = select(
+        func.count(AnomalyEvent.id).label("total"),
+        func.count(case(((AnomalyEvent.snapshot_path.isnot(None)) & (AnomalyEvent.snapshot_path != ""), AnomalyEvent.id))).label("photos"),
+        func.count(case((AnomalyEvent.severity == "CRITICAL", AnomalyEvent.id))).label("critical"),
+        func.count(case((AnomalyEvent.severity == "HIGH", AnomalyEvent.id))).label("high"),
+        func.count(case((AnomalyEvent.severity.in_(["CRITICAL", "HIGH"]), AnomalyEvent.id))).label("high_severity"),
+        func.count(case((AnomalyEvent.severity == "MEDIUM", AnomalyEvent.id))).label("medium"),
+        func.count(case((AnomalyEvent.severity == "LOW", AnomalyEvent.id))).label("low"),
+        func.count(case((AnomalyEvent.status != "RESOLVED", AnomalyEvent.id))).label("unresolved"),
+        func.count(case((AnomalyEvent.status == "RESOLVED", AnomalyEvent.id))).label("resolved"),
+    ).select_from(AnomalyEvent).join(
+        Camera, AnomalyEvent.camera_id == Camera.id
+    ).where(AnomalyEvent.anomaly_type != "PERSON_DETECTED")
+
+    if camera_id:
+        base_q = base_q.where(AnomalyEvent.camera_id == camera_id)
+    if zone and zone.upper() != "ALL":
+        base_q = base_q.where(AnomalyEvent.zone == zone.strip())
+    if anomaly_type and anomaly_type.upper() != "ALL":
+        base_q = base_q.where(AnomalyEvent.anomaly_type == anomaly_type.strip())
+
+    filtered_q = base_q
+    if date:
+        try:
+            parsed_date = datetime.strptime(date, "%Y-%m-%d").date()
+            start_dt = datetime.combine(parsed_date, time.min)
+            end_dt = datetime.combine(parsed_date, time.max)
+            filtered_q = filtered_q.where(AnomalyEvent.created_at >= start_dt, AnomalyEvent.created_at <= end_dt)
+        except ValueError:
+            pass
+
+    row = (await db.execute(scoped(filtered_q))).one()
+    stats_data = dict(row._mapping)
+
+    # Compute today's count in IST
+    now_ist = datetime.now(IST_TZ)
+    today_start = datetime(now_ist.year, now_ist.month, now_ist.day, 0, 0, 0, tzinfo=IST_TZ)
+    today_end = datetime(now_ist.year, now_ist.month, now_ist.day, 23, 59, 59, tzinfo=IST_TZ)
+    today_start_utc = today_start.astimezone(timezone.utc).replace(tzinfo=None)
+    today_end_utc = today_end.astimezone(timezone.utc).replace(tzinfo=None)
+
+    today_q = select(func.count(AnomalyEvent.id)).join(
+        Camera, AnomalyEvent.camera_id == Camera.id
+    ).where(
+        AnomalyEvent.anomaly_type != "PERSON_DETECTED",
+        AnomalyEvent.created_at >= today_start_utc,
+        AnomalyEvent.created_at <= today_end_utc
+    )
+    if camera_id:
+        today_q = today_q.where(AnomalyEvent.camera_id == camera_id)
+    if zone and zone.upper() != "ALL":
+        today_q = today_q.where(AnomalyEvent.zone == zone.strip())
+    today_count = (await db.execute(scoped(today_q))).scalar() or 0
+
+    # Compute per-camera counts for active date filter
+    cam_count_q = select(
+        AnomalyEvent.camera_id,
+        func.count(AnomalyEvent.id).label("cnt")
+    ).select_from(AnomalyEvent).join(
+        Camera, AnomalyEvent.camera_id == Camera.id
+    ).where(AnomalyEvent.anomaly_type != "PERSON_DETECTED")
+    if date:
+        try:
+            parsed_date = datetime.strptime(date, "%Y-%m-%d").date()
+            start_dt = datetime.combine(parsed_date, time.min)
+            end_dt = datetime.combine(parsed_date, time.max)
+            cam_count_q = cam_count_q.where(AnomalyEvent.created_at >= start_dt, AnomalyEvent.created_at <= end_dt)
+        except ValueError:
+            pass
+    cam_count_q = cam_count_q.group_by(AnomalyEvent.camera_id)
+    cam_rows = (await db.execute(scoped(cam_count_q))).all()
+    camera_counts = {cid: cnt for cid, cnt in cam_rows if cid}
+
+    return {
+        "total": stats_data.get("total") or 0,
+        "today": today_count,
+        "dateCount": stats_data.get("total") or 0,
+        "evidencePhotos": stats_data.get("photos") or 0,
+        "highSeverity": stats_data.get("high_severity") or 0,
+        "critical": stats_data.get("critical") or 0,
+        "high": stats_data.get("high") or 0,
+        "medium": stats_data.get("medium") or 0,
+        "low": stats_data.get("low") or 0,
+        "unresolved": stats_data.get("unresolved") or 0,
+        "resolved": stats_data.get("resolved") or 0,
+        "cameraCounts": camera_counts,
+    }
+
+@router.get("/by-camera-recent")
+async def get_recent_anomalies_by_camera(
+    date: Optional[str] = None,
+    limit_per_camera: int = Query(6, ge=1, le=24),
+    evidence_only: Optional[bool] = Query(None, alias="evidenceOnly"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns recent anomalies partitioned per camera for the By Camera card stream view.
+    Ensures every camera gets up to `limit_per_camera` evidence photos,
+    preventing high-frequency cameras from starving quieter cameras.
+    """
+    user_role = (getattr(user, "role", "") or "").upper()
+    is_admin = user_role in ("ADMINISTRATOR", "ADMIN", "FACILITY_MANAGER", "SECURITY_OFFICER")
+
+    rn = func.row_number().over(
+        partition_by=AnomalyEvent.camera_id,
+        order_by=desc(AnomalyEvent.created_at)
+    ).label("rn")
+
+    sub_q = select(
+        AnomalyEvent.id.label("event_id"),
+        Camera.name.label("camera_name"),
+        Employee.name.label("employee_name"),
+        rn
+    ).join(
+        Camera, AnomalyEvent.camera_id == Camera.id
+    ).outerjoin(
+        Employee, AnomalyEvent.employee_id == Employee.id
+    ).where(
+        AnomalyEvent.anomaly_type != "PERSON_DETECTED"
+    )
+
+    if not is_admin:
+        sub_q = sub_q.where((AnomalyEvent.user_id == user.id) | (Camera.user_id == user.id))
+
+    if evidence_only:
+        sub_q = sub_q.where((AnomalyEvent.snapshot_path.isnot(None)) & (AnomalyEvent.snapshot_path != ""))
+
+    if date:
+        try:
+            parsed_date = datetime.strptime(date, "%Y-%m-%d").date()
+            start_dt = datetime.combine(parsed_date, time.min)
+            end_dt = datetime.combine(parsed_date, time.max)
+            sub_q = sub_q.where(AnomalyEvent.created_at >= start_dt, AnomalyEvent.created_at <= end_dt)
+        except ValueError:
+            pass
+
+    sub_aliased = sub_q.subquery()
+
+    q = select(AnomalyEvent, sub_aliased.c.camera_name, sub_aliased.c.employee_name).join(
+        sub_aliased, AnomalyEvent.id == sub_aliased.c.event_id
+    ).where(sub_aliased.c.rn <= limit_per_camera).order_by(desc(AnomalyEvent.created_at))
+
+    res = await db.execute(q)
+    rows = res.all()
+
+    return [format_anomaly(evt, cname, ename) for evt, cname, ename in rows]
 
 @router.get("/dates")
 async def list_evidence_dates(
