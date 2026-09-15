@@ -800,6 +800,19 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
                 </button>
               </div>
 
+              {/* Export Watermarked Evidence Photo Button */}
+              <button
+                onClick={() => {
+                  soundService.playTactileBlip(800, 0.03);
+                  anomalyService.downloadEvidencePhoto(currentAlert.id, currentAlert.anomalyType);
+                }}
+                className="w-full flex items-center justify-center gap-2 rounded-xl border border-orange-500/40 bg-orange-500/15 hover:bg-orange-500/25 text-orange-400 py-2 text-xs font-bold transition shadow-xs cursor-pointer"
+                title="Export high-resolution evidence photo with official CamEye® watermark overlay"
+              >
+                <Download className="h-4 w-4 text-orange-400" />
+                <span>Export Photo (CamEye® Watermark)</span>
+              </button>
+
               {onDelete && (
                 <button
                   disabled={isDeleting}
@@ -1024,6 +1037,18 @@ const IncidentEvidenceCard: React.FC<IncidentEvidenceCardProps> = ({
             title="Inspect Incident Proof"
           >
             <Eye className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              soundService.playTactileBlip(820, 0.02);
+              anomalyService.downloadEvidencePhoto(alert.id, alert.anomalyType);
+            }}
+            className="p-1.5 text-amber-500 hover:text-amber-400 hover:bg-amber-500/10 rounded-md transition-colors cursor-pointer"
+            title="Export Evidence Photo with CamEye® Watermark"
+          >
+            <Download className="w-3.5 h-3.5" />
           </button>
 
           {onDelete && (

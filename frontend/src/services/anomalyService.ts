@@ -130,11 +130,28 @@ export const anomalyService = {
    * Safe backend-served endpoint for evidence images.
    * Direct streaming via /api/anomalies/{id}/evidence?token=...
    */
-  getEvidenceUrl(id: string): string {
+  getEvidenceUrl(id: string, options: { download?: boolean; watermark?: boolean } = {}): string {
     if (!id) return '';
     const token = getStoredToken();
-    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
-    return `${API_BASE_URL}/anomalies/${id}/evidence${qs}`;
+    const params = new URLSearchParams();
+    if (token) params.append('token', token);
+    if (options.download) params.append('download', 'true');
+    if (options.watermark) params.append('watermark', 'true');
+    const qs = params.toString();
+    return `${API_BASE_URL}/anomalies/${id}/evidence${qs ? `?${qs}` : ''}`;
+  },
+
+  /**
+   * Triggers direct browser download of evidence photo with CamEye® presentation watermark.
+   */
+  async downloadEvidencePhoto(id: string, anomalyType: string = 'evidence'): Promise<void> {
+    const url = this.getEvidenceUrl(id, { download: true, watermark: true });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cameye_evidence_${anomalyType}_${id}.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   },
 
   /**

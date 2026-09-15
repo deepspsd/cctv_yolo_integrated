@@ -3,6 +3,8 @@ import io
 from datetime import datetime, timezone, time, timedelta
 from typing import Optional, List
 from pathlib import Path
+import cv2
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +21,49 @@ from app.config import settings
 
 # Indian Standard Time (IST - Asia/Kolkata, UTC+5:30)
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+def apply_cameye_watermark(img_bgr: np.ndarray, meta_text: Optional[str] = None) -> np.ndarray:
+    """
+    Renders an elegant, official CamEye® presentation watermark overlay along the bottom.
+    Includes dark translucent ribbon, CamEye® italic branding, shield indicator, and IST timestamp.
+    """
+    if img_bgr is None or img_bgr.size == 0:
+        return img_bgr
+
+    img = img_bgr.copy()
+    h, w = img.shape[:2]
+
+    # Watermark bar height
+    bar_h = max(34, int(h * 0.055))
+    overlay = img.copy()
+    cv2.rectangle(overlay, (0, h - bar_h), (w, h), (10, 12, 18), -1)
+    # 70% opacity blend for clean translucent finish
+    cv2.addWeighted(overlay, 0.75, img, 0.25, 0, img)
+
+    # Accent orange line on top of ribbon
+    cv2.line(img, (0, h - bar_h), (w, h - bar_h), (30, 140, 245), 2)
+
+    # CamEye® Brand mark
+    brand_text = "CamEye(R) SURVEILLANCE EVIDENCE"
+    font = cv2.FONT_HERSHEY_DUPLEX
+    font_scale = max(0.48, bar_h / 68.0)
+    y_pos = int(h - bar_h / 2 + 5)
+
+    # Glow / shadow for brand
+    cv2.putText(img, brand_text, (16, y_pos + 1), font, font_scale, (0, 0, 0), 2, cv2.LINE_AA)
+    # Bright white / orange brand
+    cv2.putText(img, "CamEye", (16, y_pos), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+    cameye_size = cv2.getTextSize("CamEye", font, font_scale, 1)[0]
+    cv2.putText(img, "(R) SURVEILLANCE EVIDENCE", (18 + cameye_size[0], y_pos), font, font_scale * 0.85, (30, 140, 245), 1, cv2.LINE_AA)
+
+    # Right-aligned IST metadata if provided
+    if meta_text:
+        meta_font_scale = max(0.40, bar_h / 80.0)
+        text_size = cv2.getTextSize(meta_text, cv2.FONT_HERSHEY_SIMPLEX, meta_font_scale, 1)[0]
+        x_meta = max(w - text_size[0] - 16, cameye_size[0] + 160)
+        cv2.putText(img, meta_text, (x_meta, y_pos), cv2.FONT_HERSHEY_SIMPLEX, meta_font_scale, (200, 220, 240), 1, cv2.LINE_AA)
+
+    return img
 
 def to_utc_iso(dt: Optional[datetime]) -> Optional[str]:
     if not dt:
@@ -523,15 +568,17 @@ async def get_anomaly_evidence(
     id: str,
     request: Request,
     token: Optional[str] = Query(None),
+    download: bool = Query(False),
+    watermark: bool = Query(False),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Stream evidence snapshot securely from local backend storage.
-    Enforces strict user isolation: only owner or administrator can view photo.
+    Supports in-memory AES decryption, download attachment headers, and CamEye® presentation watermark.
     """
     req_user = await authenticate_request(request, token_param=token, db=db)
 
-    query = select(AnomalyEvent, Camera.user_id.label("camera_user_id")).join(
+    query = select(AnomalyEvent, Camera.name.label("camera_name"), Camera.user_id.label("camera_user_id")).join(
         Camera, AnomalyEvent.camera_id == Camera.id
     ).where(AnomalyEvent.id == id)
     result = await db.execute(query)
@@ -542,7 +589,7 @@ async def get_anomaly_evidence(
             detail=f"Anomaly event '{id}' not found."
         )
 
-    evt, cam_user_id = row
+    evt, camera_name, cam_user_id = row
 
     # Enforce user privacy isolation
     user_role = (getattr(req_user, "role", "") or "").upper()
@@ -553,55 +600,66 @@ async def get_anomaly_evidence(
         if not evt.user_id and cam_user_id and cam_user_id != req_user.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: photo belongs to another user.")
 
-    # 1. Primary: decrypt directly from database in-memory (Anti-leak privacy guarantee)
+    # Retrieve raw image bytes (1st: decrypted from DB; 2nd: physical disk)
+    raw_bytes = None
     if evt.encrypted_image:
         try:
-            decrypted_bytes = decrypt_bytes(evt.encrypted_image)
-            if decrypted_bytes:
-                return Response(
-                    content=decrypted_bytes,
-                    media_type="image/jpeg",
-                    headers={
-                        "Cache-Control": "private, max-age=3600",
-                        "Content-Disposition": f"inline; filename=evidence_{id}.jpg"
-                    }
-                )
+            raw_bytes = decrypt_bytes(evt.encrypted_image)
         except Exception:
+            raw_bytes = None
+
+    if not raw_bytes:
+        if not evt.snapshot_path:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence snapshot path not set.")
+        file_path = Path(evt.snapshot_path)
+        if not file_path.is_file():
+            app_dir = Path(__file__).resolve().parent.parent.parent
+            candidates = [
+                app_dir / evt.snapshot_path,
+                app_dir.parent / "backend" / evt.snapshot_path,
+                Path.cwd() / evt.snapshot_path,
+                Path.cwd() / "backend" / evt.snapshot_path
+            ]
+            for cand in candidates:
+                if cand.is_file():
+                    file_path = cand
+                    break
+        if file_path.is_file():
+            try:
+                raw_bytes = file_path.read_bytes()
+            except Exception:
+                raw_bytes = None
+
+    if not raw_bytes:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence image file not found or corrupted.")
+
+    # Apply CamEye® presentation watermark if requested or downloaded
+    final_bytes = raw_bytes
+    if watermark or download:
+        try:
+            nparr = np.frombuffer(raw_bytes, np.uint8)
+            img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img_bgr is not None:
+                ist_time_str = to_ist_str(evt.confirmed_at or evt.created_at, "%d %b %Y, %I:%M:%S %p IST")
+                cam_label = camera_name or evt.camera_id
+                meta = f"{cam_label} | {evt.anomaly_type} | {ist_time_str}"
+                watermarked = apply_cameye_watermark(img_bgr, meta_text=meta)
+                success, enc = cv2.imencode('.jpg', watermarked, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                if success:
+                    final_bytes = enc.tobytes()
+        except Exception as wm_err:
             pass
 
-    # 2. Fallback to physical disk storage if encrypted_image not yet populated
-    if not evt.snapshot_path:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Evidence snapshot path not set for this anomaly."
-        )
+    disposition_type = "attachment" if download else "inline"
+    filename = f"cameye_evidence_{evt.anomaly_type}_{id}.jpg"
 
-    # Robust path resolution across backend directory, cwd, and root
-    file_path = Path(evt.snapshot_path)
-    if not file_path.is_file():
-        app_dir = Path(__file__).resolve().parent.parent.parent  # backend
-        candidate1 = app_dir / evt.snapshot_path
-        candidate2 = app_dir.parent / "backend" / evt.snapshot_path
-        candidate3 = Path.cwd() / evt.snapshot_path
-        candidate4 = Path.cwd() / "backend" / evt.snapshot_path
-        if candidate1.is_file():
-            file_path = candidate1
-        elif candidate2.is_file():
-            file_path = candidate2
-        elif candidate3.is_file():
-            file_path = candidate3
-        elif candidate4.is_file():
-            file_path = candidate4
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Evidence image file not found on server disk ({evt.snapshot_path})."
-            )
-
-    return FileResponse(
-        path=str(file_path),
+    return Response(
+        content=final_bytes,
         media_type="image/jpeg",
-        filename=file_path.name
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Content-Disposition": f"{disposition_type}; filename={filename}"
+        }
     )
 
 @router.patch("/{id}/status", response_model=AnomalyEventResponse)
