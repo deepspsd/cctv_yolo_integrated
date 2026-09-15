@@ -1117,35 +1117,59 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
   const [localStatuses, setLocalStatuses] = useState<Record<string, string>>({});
   const [resolvingId, setResolvingId] = useState<string | null>(null);
 
-  // Historical alerts fetched specifically for selectedDate
-  const [historicalAlerts, setHistoricalAlerts] = useState<AnomalyAlertEvent[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
+  // ── Backend-paged data layer ──────────────────────────────────────────────
+  const PAGE_SIZE = 50;
+  const [backendAlerts, setBackendAlerts] = useState<AnomalyAlertEvent[]>([]);
+  const [backendPage, setBackendPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [isFetchingBackend, setIsFetchingBackend] = useState(false);
 
-  // Fetch full records for selectedDate from backend if specified
-  useEffect(() => {
-    if (!selectedDate) {
-      setHistoricalAlerts([]);
-      return;
-    }
-    let isCancelled = false;
-    const loadDateAlerts = async () => {
-      setLoadingHistory(true);
-      try {
-        const res = await anomalyService.getAnomalies({ date: selectedDate, limit: 1000 });
-        if (!isCancelled) {
-          setHistoricalAlerts(res);
-        }
-      } catch (err) {
-        console.error('Failed to load date anomalies from backend:', err);
-      } finally {
-        if (!isCancelled) setLoadingHistory(false);
+  /**
+   * Fetches a page of alerts from backend with all active filters applied server-side.
+   * reset=true → clears existing results and fetches page 0.
+   * reset=false → appends next page (Load More).
+   */
+  const fetchBackendAlerts = useCallback(async (reset: boolean = true) => {
+    if (isFetchingBackend && !reset) return; // don't double-fetch on Load More
+    setIsFetchingBackend(true);
+    const offset = reset ? 0 : backendPage * PAGE_SIZE;
+    try {
+      const apiOrder: 'asc' | 'desc' = (sortOrder === 'asc') ? 'asc' : 'desc';
+      const data = await anomalyService.getAnomalies({
+        date: selectedDate || undefined,
+        cameraId: selectedCamera !== 'ALL' ? selectedCamera : undefined,
+        zone: selectedZone !== 'ALL' ? selectedZone : undefined,
+        anomalyType: selectedType !== 'ALL' ? selectedType : undefined,
+        status: (selectedStatus !== 'ALL' && selectedStatus !== 'UNRESOLVED') ? selectedStatus : undefined,
+        order: apiOrder,
+        limit: PAGE_SIZE,
+        offset,
+      });
+      setHasMore(data.length === PAGE_SIZE);
+      if (reset) {
+        setBackendAlerts(data);
+        setBackendPage(1);
+      } else {
+        setBackendAlerts((prev) => {
+          const ids = new Set(prev.map((a) => a.id));
+          return [...prev, ...data.filter((a) => !ids.has(a.id))];
+        });
+        setBackendPage((p) => p + 1);
       }
-    };
-    loadDateAlerts();
-    return () => { isCancelled = true; };
-  }, [selectedDate]);
+    } catch (err) {
+      console.error('Backend alert fetch failed:', err);
+    } finally {
+      setIsFetchingBackend(false);
+    }
+  }, [isFetchingBackend, backendPage, sortOrder, selectedDate, selectedCamera, selectedZone, selectedType, selectedStatus]);
 
-  // Fetch evidence dates from backend/data/evidence
+  // Re-fetch from page 0 whenever server-side filters change
+  useEffect(() => {
+    fetchBackendAlerts(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate, selectedCamera, selectedZone, selectedType, selectedStatus, sortOrder]);
+
+  // Fetch evidence dates from backend
   const fetchEvidenceDates = useCallback(async () => {
     setLoadingDates(true);
     try {
@@ -1158,7 +1182,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     }
   }, []);
 
-  // Fetch real total count from backend — not bounded by pagination limit
+  // Fetch real total count (unfiltered, all-time)
   const fetchRealTotal = useCallback(async () => {
     try {
       const total = await anomalyService.getTotal();
@@ -1166,26 +1190,35 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     } catch { /* ignore */ }
   }, []);
 
-  // Auto-sync alerts and evidence every 5 seconds; total every 30 seconds
+  // Light polling — evidence dates every 60s, total every 60s, backend page-0 refresh every 60s
   useEffect(() => {
     fetchEvidenceDates();
     fetchRealTotal();
-    const interval5s = setInterval(() => {
-      onRefresh?.();
+    const interval = setInterval(() => {
       fetchEvidenceDates();
-    }, 5000);
-    const interval30s = setInterval(() => {
       fetchRealTotal();
-    }, 30_000);
-    return () => {
-      clearInterval(interval5s);
-      clearInterval(interval30s);
-    };
-  }, [fetchEvidenceDates, fetchRealTotal, onRefresh]);
+      fetchBackendAlerts(true);
+    }, 60_000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchEvidenceDates, fetchRealTotal]);
 
-  // Merged alerts with normalization, historical date fetch & local statuses
+  // Merged alerts — WebSocket real-time additions + backend paged results
   const mergedAlerts = useMemo(() => {
-    const rawList = [...historicalAlerts, ...alerts];
+    // ws alerts = small set from App.tsx (real-time additions only)
+    // Filter ws alerts to match current server-side filters (so they appear correctly)
+    const wsFiltered = alerts.filter((a) => {
+      if (selectedDate) {
+        const keys = getAlertDateKeys(a.confirmedAt || a.createdAt);
+        if (!keys.includes(selectedDate)) return false;
+      }
+      if (selectedCamera !== 'ALL' && a.cameraId !== selectedCamera) return false;
+      if (selectedZone !== 'ALL' && a.zone !== selectedZone) return false;
+      if (selectedType !== 'ALL' && a.anomalyType !== selectedType) return false;
+      return true;
+    });
+
+    const rawList = [...wsFiltered, ...backendAlerts];
     const uniqueMap = new Map<string, any>();
     rawList.forEach((raw) => {
       if (raw && raw.id) uniqueMap.set(raw.id, raw);
@@ -1211,7 +1244,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         };
         return a;
       });
-  }, [alerts, historicalAlerts, localStatuses, deletedAlertIds]);
+  }, [alerts, backendAlerts, selectedDate, selectedCamera, selectedZone, selectedType, localStatuses, deletedAlertIds]);
 
   // Derived available dates combining backend discovery + in-memory alerts
   const availableDateOptions = useMemo(() => {
@@ -1440,50 +1473,24 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
     return Array.from(types).sort();
   }, [alerts]);
 
-  // Filtered and sorted alerts list
+  // Filtered and sorted alerts — backend handles date/camera/zone/type/status/order.
+  // Client handles: search text, evidenceOnly, UNRESOLVED status, severity/confidence sort.
   const filteredAlerts = useMemo(() => {
     return mergedAlerts
       .filter((alert) => {
-        // Camera filter
-        if (selectedCamera !== 'ALL' && alert.cameraId !== selectedCamera) {
-          return false;
+        // UNRESOLVED is custom client logic (backend doesn't have this literal status)
+        if (selectedStatus === 'UNRESOLVED') {
+          const norm = (alert.status || 'NEW').toUpperCase();
+          if (norm === 'RESOLVED') return false;
         }
 
-        // Zone filter
-        if (selectedZone !== 'ALL' && alert.zone !== selectedZone) {
-          return false;
-        }
-
-        // Anomaly type filter
-        if (selectedType !== 'ALL' && alert.anomalyType !== selectedType) {
-          return false;
-        }
-
-        // Severity filter
+        // Severity filter (client-side — no backend support)
         if (selectedSeverity !== 'ALL') {
           const sev = getSeverity(alert);
           if (sev !== selectedSeverity) return false;
         }
 
-        // Status filter
-        if (selectedStatus !== 'ALL') {
-          const norm = (alert.status || 'NEW').toUpperCase();
-          if (selectedStatus === 'UNRESOLVED') {
-            if (norm === 'RESOLVED') return false;
-          } else if (selectedStatus === 'NEW' && norm !== 'NEW' && norm !== 'CONFIRMED' && norm !== 'ACTIVE') {
-            return false;
-          } else if (selectedStatus !== 'NEW' && selectedStatus !== 'UNRESOLVED' && norm !== selectedStatus) {
-            return false;
-          }
-        }
-
-        // Date filter: multi-timezone matching (direct string, UTC, local)
-        if (selectedDate) {
-          const alertDateKeys = getAlertDateKeys(alert.confirmedAt || alert.createdAt);
-          if (!alertDateKeys.includes(selectedDate)) return false;
-        }
-
-        // Search query
+        // Free-text search
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase().trim();
           const matchCam = (alert.cameraName || alert.cameraId).toLowerCase().includes(q);
@@ -1497,7 +1504,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
           }
         }
 
-        // Evidence photos only filter (filters out empty/non-photo events)
+        // Evidence photos only
         if (evidenceOnly && (!alert.snapshotPath || !alert.snapshotPath.trim())) {
           return false;
         }
@@ -1507,8 +1514,6 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
       .sort((a, b) => {
         const timeA = new Date(a.confirmedAt || a.createdAt).getTime() || 0;
         const timeB = new Date(b.confirmedAt || b.createdAt).getTime() || 0;
-        if (sortOrder === 'desc') return timeB - timeA;
-        if (sortOrder === 'asc') return timeA - timeB;
         if (sortOrder === 'severity') {
           const diff = getSeverityRank(b) - getSeverityRank(a);
           return diff !== 0 ? diff : timeB - timeA;
@@ -1517,20 +1522,18 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
           const diff = (b.confidence || 0) - (a.confidence || 0);
           return diff !== 0 ? diff : timeB - timeA;
         }
+        // asc/desc already sorted by backend — preserve backend order for speed
         return timeB - timeA;
       });
   }, [
     mergedAlerts,
     evidenceOnly,
-    selectedCamera,
-    selectedZone,
-    selectedType,
     selectedSeverity,
     selectedStatus,
-    selectedDate,
     searchQuery,
     sortOrder,
   ]);
+
 
   // Total count of real captured snapshots
   const totalWithEvidenceCount = useMemo(() => {
@@ -1625,7 +1628,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
       setResolvingId(id);
       await anomalyService.updateAnomalyStatus(id, newStatus);
       setLocalStatuses((prev) => ({ ...prev, [id]: newStatus }));
-      setHistoricalAlerts((prev) =>
+      setBackendAlerts((prev) =>
         prev.map((a) => (a.id === id ? { ...a, status: newStatus } : a))
       );
       if (inspectAlert && inspectAlert.id === id) {
@@ -1649,7 +1652,7 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
         next.add(id);
         return next;
       });
-      setHistoricalAlerts((prev) => prev.filter((a) => a.id !== id));
+      setBackendAlerts((prev) => prev.filter((a) => a.id !== id));
       if (inspectAlert && inspectAlert.id === id) {
         setInspectAlert(null);
       }
@@ -2523,7 +2526,8 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
 
           {/* Match Count Badge */}
           <div className="ml-auto text-xs font-mono text-slate-500">
-            Showing <span className="font-bold text-slate-900 dark:text-white">{filteredAlerts.length}</span> {evidenceOnly ? 'evidence photos' : 'events'} of {mergedAlerts.length}
+            Showing <span className="font-bold text-slate-900 dark:text-white">{filteredAlerts.length}</span> {evidenceOnly ? 'evidence photos' : 'events'}
+            {hasMore && <span className="ml-1 text-slate-400">(more available)</span>}
           </div>
         </div>
       </section>
@@ -2958,6 +2962,23 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+      
+      {/* ─── Load More ──────────────────────────────────────────────────── */}
+      {hasMore && !isFetchingBackend && filteredAlerts.length > 0 && (
+        <div className="flex justify-center mt-6">
+          <button
+            onClick={() => fetchBackendAlerts(false)}
+            className="flex items-center gap-2 rounded-xl border border-orange-500/30 bg-orange-500/10 hover:bg-orange-500/20 px-6 py-3 text-sm font-semibold text-orange-500 dark:text-orange-400 transition cursor-pointer shadow-sm"
+          >
+            Load More Events
+          </button>
+        </div>
+      )}
+      {isFetchingBackend && (
+        <div className="flex justify-center mt-6">
+          <span className="text-xs font-mono text-slate-400 animate-pulse">Loading…</span>
         </div>
       )}
 

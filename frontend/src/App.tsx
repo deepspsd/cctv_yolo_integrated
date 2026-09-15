@@ -169,16 +169,16 @@ export default function App() {
   }, []);
 
   // Fetch Anomaly Alerts — merge with existing state, never wipe WebSocket additions
+  // Limit 100: AlertsPage now handles its own backend-paged data fetch.
+  // This only feeds the navbar badge count + WebSocket dedup context.
   const loadAlerts = useCallback(async () => {
     if (!authService.isLoggedIn()) return;
     try {
-      const data = await anomalyService.getAnomalies({ limit: 2000 });
+      const data = await anomalyService.getAnomalies({ limit: 100 });
       setAlerts((prev) => {
-        // Build a set of IDs already in state
         const existingIds = new Set(prev.map((a) => a.id));
-        // Prepend only genuinely new records from DB (not already in state)
         const incoming = data.filter((a) => !existingIds.has(a.id));
-        if (incoming.length === 0) return prev; // nothing new — no re-render
+        if (incoming.length === 0) return prev;
         return [...incoming, ...prev];
       });
     } catch (err: any) {
