@@ -246,9 +246,12 @@ class AttendanceResponse(BaseModel):
     employee_code: str = Field(..., alias="employeeCode")
     employee_name: str = Field(..., alias="employeeName")
     department: str
+    designation: str = Field(default="Staff")
     date: str
     first_seen_at: str = Field(..., alias="firstSeenAt")
     last_seen_at: str = Field(..., alias="lastSeenAt")
+    clock_in_time: str = Field(..., alias="clockInTime")
+    last_seen_time: str = Field(..., alias="lastSeenTime")
     clock_in_camera_id: str | None = Field(default=None, alias="clockInCameraId")
     last_seen_camera_id: str | None = Field(default=None, alias="lastSeenCameraId")
     clock_in_camera_name: str | None = Field(default=None, alias="clockInCameraName")
@@ -256,15 +259,22 @@ class AttendanceResponse(BaseModel):
     clock_in_confidence: float = Field(..., alias="clockInConfidence")
     status: str
     duration_hours: str = Field(default="0.0", alias="durationHours")
+    total_hours: float | None = Field(default=0.0, alias="totalHours")
+    observations_count: int = Field(default=1, alias="observationsCount")
+    ppe_violations_count: int = Field(default=0, alias="ppeViolationsCount")
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
 
 class AttendanceSummaryResponse(BaseModel):
     date: str
     total_employees: int = Field(..., alias="totalEmployees")
+    total_registered: int = Field(..., alias="totalRegistered")
     clocked_in_today: int = Field(..., alias="clockedInToday")
+    total_present: int = Field(..., alias="totalPresent")
     active_on_site: int = Field(..., alias="activeOnSite")
+    currently_on_site: int = Field(..., alias="currentlyOnSite")
     completed_shifts: int = Field(..., alias="completedShifts")
     attendance_rate: float = Field(..., alias="attendanceRate")
+    total_ppe_violations_today: int = Field(default=0, alias="totalPpeViolationsToday")
     model_config = ConfigDict(populate_by_name=True)
 

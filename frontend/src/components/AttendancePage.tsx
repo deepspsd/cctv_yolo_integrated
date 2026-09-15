@@ -28,6 +28,7 @@ import {
 import { AttendanceRecord, AttendanceSummary, Camera } from '../types';
 import { attendanceService } from '../services/attendanceService';
 import { soundService } from '../services/soundService';
+import { cameraWebSocket } from '../services/cameraService';
 
 const formatDisplayDate = (iso?: string | null): string => {
   if (!iso) return 'Select Date';
@@ -188,6 +189,55 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ cameras = [] }) 
     loadData();
   }, [selectedDate, selectedDept, selectedStatus]);
 
+  // Real-time WebSocket listener: auto-update attendance page when staff is recognized
+  useEffect(() => {
+    const unsub = cameraWebSocket.subscribe((event) => {
+      if (event.type === 'ATTENDANCE_UPDATE') {
+        const att = event.payload;
+        if (!att) return;
+
+        // If today matches current view, refresh or patch records
+        const todayDate = new Date().toISOString().split('T')[0];
+        if (selectedDate === todayDate || !selectedDate) {
+          setRecords((prev) => {
+            const idx = prev.findIndex((r) => r.id === att.id || r.employeeId === att.employeeId);
+            const updatedRec: AttendanceRecord = {
+              id: att.id,
+              employeeId: att.employeeId,
+              employeeCode: att.employeeCode || '',
+              employeeName: att.employeeName || 'Staff',
+              department: att.department || 'General',
+              designation: att.designation || 'Staff',
+              date: att.date || todayDate,
+              clockInTime: att.clockInTime || att.firstSeenAt || '',
+              clockInCameraName: att.clockInCameraName || att.cameraName || null,
+              lastSeenTime: att.lastSeenTime || att.lastSeenAt || '',
+              lastSeenCameraName: att.lastSeenCameraName || att.cameraName || null,
+              totalHours: att.totalHours !== undefined ? Number(att.totalHours) : 0,
+              status: att.status || 'PRESENT',
+              observationsCount: idx >= 0 ? (prev[idx].observationsCount + 1) : 1,
+              ppeViolationsCount: idx >= 0 ? prev[idx].ppeViolationsCount : 0,
+              updatedAt: att.lastSeenAt || new Date().toISOString(),
+            };
+
+            if (idx >= 0) {
+              const copy = [...prev];
+              copy[idx] = { ...copy[idx], ...updatedRec };
+              return copy;
+            } else {
+              return [updatedRec, ...prev];
+            }
+          });
+
+          // Refresh summary stats silently
+          attendanceService.getSummary(selectedDate).then(setSummary).catch(() => {});
+        }
+      }
+    });
+
+    return () => unsub();
+  }, [selectedDate]);
+
   const handleExport = async (format: 'csv' | 'xlsx') => {
     setIsExporting(true);
     soundService.playTactileBlip(880, 0.03);
@@ -230,9 +280,17 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ cameras = [] }) 
 
   const formatTime = (iso?: string | null) => {
     if (!iso) return '--:--';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return '--:--';
-    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+    // Append Z if naive ISO string without timezone
+    const normalized = !iso.endsWith('Z') && !iso.includes('+') && !iso.includes('-')
+      ? `${iso}Z`
+      : (!iso.endsWith('Z') && !iso.includes('+') && iso.includes('T') ? `${iso}Z` : iso);
+    const d = new Date(normalized);
+    if (Number.isNaN(d.getTime())) {
+      const fallback = new Date(iso);
+      if (Number.isNaN(fallback.getTime())) return '--:--';
+      return fallback.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+    }
+    return d.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
   };
 
   return (

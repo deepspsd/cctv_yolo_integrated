@@ -3,6 +3,7 @@ import csv
 import json
 import uuid
 import logging
+import time
 from datetime import datetime, timezone, date, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 
@@ -28,6 +29,7 @@ class AttendanceService:
     """
     def __init__(self):
         self.absence_timeout_minutes = settings.ATTENDANCE_ABSENCE_MINUTES
+        self._last_broadcast_by_emp: Dict[str, float] = {}
 
     async def reload_templates_cache(self, db_session: Optional[Any] = None):
         """
@@ -164,25 +166,46 @@ class AttendanceService:
                 emp_res = await db.execute(select(Employee).where(Employee.id == employee_id))
                 emp = emp_res.scalar_one_or_none()
 
+                first_seen_iso = att.first_seen_at.isoformat() if att.first_seen_at else None
+                last_seen_iso = att.last_seen_at.isoformat() if att.last_seen_at else None
+                dur_hrs = "0.0"
+                if att.first_seen_at and att.last_seen_at:
+                    sec = (att.last_seen_at - att.first_seen_at).total_seconds()
+                    dur_hrs = f"{sec / 3600.0:.2f}"
+
                 payload = {
                     "id": att.id,
                     "employeeId": att.employee_id,
                     "employeeCode": emp.employee_code if emp else "",
                     "employeeName": emp.name if emp else "Unknown",
                     "department": emp.department if emp else "General",
+                    "designation": emp.role if emp and emp.role else "Staff",
                     "date": att.date,
-                    "firstSeenAt": att.first_seen_at.isoformat() if att.first_seen_at else None,
-                    "lastSeenAt": att.last_seen_at.isoformat() if att.last_seen_at else None,
+                    "firstSeenAt": first_seen_iso,
+                    "lastSeenAt": last_seen_iso,
+                    "clockInTime": first_seen_iso,
+                    "lastSeenTime": last_seen_iso,
                     "clockInCameraId": att.clock_in_camera_id,
                     "lastSeenCameraId": att.last_seen_camera_id,
+                    "clockInCameraName": cam_name,
+                    "lastSeenCameraName": cam_name,
                     "cameraName": cam_name,
                     "confidence": att.clock_in_confidence,
+                    "clockInConfidence": att.clock_in_confidence,
                     "status": att.status,
+                    "durationHours": dur_hrs,
+                    "totalHours": float(dur_hrs),
                     "isClockIn": is_new_clock_in
                 }
 
-                # Broadcast live attendance event over WebSockets
-                await ws_manager.broadcast("ATTENDANCE_UPDATE", payload)
+                # Broadcast live attendance event over WebSockets (throttled to avoid spamming frontend)
+                now_mono = time.monotonic()
+                last_broadcast = self._last_broadcast_by_emp.get(employee_id, 0.0)
+                # Always broadcast initial clock-in immediately; throttle subsequent track updates to once every 30s
+                if is_new_clock_in or (now_mono - last_broadcast) >= 30.0:
+                    self._last_broadcast_by_emp[employee_id] = now_mono
+                    await ws_manager.broadcast("ATTENDANCE_UPDATE", payload)
+
                 return payload
 
         except Exception as e:
@@ -251,20 +274,28 @@ class AttendanceService:
                 return {
                     "date": target_date,
                     "totalEmployees": total_employees,
+                    "totalRegistered": total_employees,
                     "clockedInToday": present_count,
+                    "totalPresent": present_count,
                     "activeOnSite": active_on_site,
+                    "currentlyOnSite": active_on_site,
                     "completedShifts": completed_count,
-                    "attendanceRate": round((present_count / max(1, total_employees)) * 100, 1)
+                    "attendanceRate": round((present_count / max(1, total_employees)) * 100, 1),
+                    "totalPpeViolationsToday": 0
                 }
         except Exception as e:
             logger.error(f"Error getting attendance summary: {e}")
             return {
                 "date": target_date,
                 "totalEmployees": 0,
+                "totalRegistered": 0,
                 "clockedInToday": 0,
+                "totalPresent": 0,
                 "activeOnSite": 0,
+                "currentlyOnSite": 0,
                 "completedShifts": 0,
-                "attendanceRate": 0.0
+                "attendanceRate": 0.0,
+                "totalPpeViolationsToday": 0
             }
 
     async def export_attendance_csv(

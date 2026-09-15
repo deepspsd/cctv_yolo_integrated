@@ -62,22 +62,30 @@ async def list_attendance(
             sec = (att.last_seen_at - att.first_seen_at).total_seconds()
             dur_hrs = f"{sec / 3600.0:.2f}"
 
+        first_seen_iso = att.first_seen_at.isoformat() if att.first_seen_at else None
+        last_seen_iso = att.last_seen_at.isoformat() if att.last_seen_at else None
         results.append({
             "id": att.id,
             "employeeId": emp.id,
             "employeeCode": emp.employee_code,
             "employeeName": emp.name,
             "department": emp.department,
+            "designation": emp.role if emp.role else "Staff",
             "date": att.date,
-            "firstSeenAt": att.first_seen_at.isoformat() if att.first_seen_at else None,
-            "lastSeenAt": att.last_seen_at.isoformat() if att.last_seen_at else None,
+            "firstSeenAt": first_seen_iso,
+            "lastSeenAt": last_seen_iso,
+            "clockInTime": first_seen_iso,
+            "lastSeenTime": last_seen_iso,
             "clockInCameraId": att.clock_in_camera_id,
             "lastSeenCameraId": att.last_seen_camera_id,
             "clockInCameraName": cam_dict.get(att.clock_in_camera_id, att.clock_in_camera_id),
             "lastSeenCameraName": cam_dict.get(att.last_seen_camera_id, att.last_seen_camera_id),
             "clockInConfidence": att.clock_in_confidence,
             "status": att.status,
-            "durationHours": dur_hrs
+            "durationHours": dur_hrs,
+            "totalHours": float(dur_hrs),
+            "observationsCount": 1,
+            "ppeViolationsCount": 0
         })
 
     return results
@@ -154,21 +162,29 @@ async def get_employee_attendance_history(
             sec = (att.last_seen_at - att.first_seen_at).total_seconds()
             dur_hrs = f"{sec / 3600.0:.2f}"
 
+        first_seen_iso = att.first_seen_at.isoformat() if att.first_seen_at else None
+        last_seen_iso = att.last_seen_at.isoformat() if att.last_seen_at else None
         results.append({
             "id": att.id,
             "employeeId": emp.id,
             "employeeCode": emp.employee_code,
             "employeeName": emp.name,
             "department": emp.department,
+            "designation": emp.role if emp.role else "Staff",
             "date": att.date,
-            "firstSeenAt": att.first_seen_at.isoformat() if att.first_seen_at else None,
-            "lastSeenAt": att.last_seen_at.isoformat() if att.last_seen_at else None,
+            "firstSeenAt": first_seen_iso,
+            "lastSeenAt": last_seen_iso,
+            "clockInTime": first_seen_iso,
+            "lastSeenTime": last_seen_iso,
             "clockInCameraId": att.clock_in_camera_id,
             "lastSeenCameraId": att.last_seen_camera_id,
             "clockInCameraName": cam_dict.get(att.clock_in_camera_id, att.clock_in_camera_id),
             "lastSeenCameraName": cam_dict.get(att.last_seen_camera_id, att.last_seen_camera_id),
             "clockInConfidence": att.clock_in_confidence,
             "status": att.status,
-            "durationHours": dur_hrs
+            "durationHours": dur_hrs,
+            "totalHours": float(dur_hrs),
+            "observationsCount": 1,
+            "ppeViolationsCount": 0
         })
     return results

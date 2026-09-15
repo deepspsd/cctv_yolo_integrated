@@ -271,9 +271,11 @@ export default function App() {
         });
       } else if (event.type === 'ATTENDANCE_UPDATE') {
         const att = event.payload;
-        soundService.playTactileBlip(920, 0.02);
-        addToast(`✅ Attendance Clocked: ${att.employeeName || 'Staff'} (${att.status || 'PRESENT'})`, 'info');
-      } else if (event.type === 'CAMERA_ANOMALY_ALERT') {
+        // Anti-spam guard: only show toast on initial daily clock-in or distinct new event
+        if (att && att.isClockIn) {
+          soundService.playTactileBlip(920, 0.02);
+          addToast(`✅ Attendance Clocked: ${att.employeeName || 'Staff'} (${att.status || 'PRESENT'})`, 'info');
+        }
         const raw = event.payload;
         const newAlert: AnomalyAlertEvent = {
           id: raw.id || `evt_${Date.now()}`,
