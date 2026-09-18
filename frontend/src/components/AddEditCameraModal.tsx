@@ -744,7 +744,7 @@ export const AddEditCameraModal: React.FC<AddEditCameraModalProps> = ({
                       setUserLogin(e.target.value);
                       if (errors.userLogin) setErrors({ ...errors, userLogin: '' });
                     }}
-                    placeholder="officer@cameye.internal"
+                    placeholder="officer@occusafe.internal"
                     disabled={isSaving}
                     required
                     className={`w-full px-3 py-1.5 text-[13px] bg-white dark:bg-[#181820] border rounded-lg text-[#0a0a0a] dark:text-white placeholder-[#8c8c8c] dark:placeholder-[#71717a] tracking-tight focus:outline-none focus:ring-1 transition-all ${

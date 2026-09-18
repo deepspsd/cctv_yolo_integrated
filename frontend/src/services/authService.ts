@@ -1,15 +1,15 @@
 /**
  * authService — connects to real FastAPI JWT backend.
- * Token stored in localStorage under CAMEYE_TOKEN_KEY.
+ * Token stored in localStorage under OCCUSAFE_TOKEN_KEY.
  * All API calls send Authorization: Bearer <token>.
  */
 import { User, LoginCredentials, RegisterData } from '../types';
 
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:5000/api';
 
-const TOKEN_KEY = 'cameye_access_token';
-const REFRESH_TOKEN_KEY = 'cameye_refresh_token';
-const USER_KEY  = 'cameye_current_user';
+const TOKEN_KEY = 'occusafe_access_token';
+const REFRESH_TOKEN_KEY = 'occusafe_refresh_token';
+const USER_KEY  = 'occusafe_current_user';
 
 // ─── Token storage helpers ──────────────────────────────────────────────────
 

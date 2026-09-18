@@ -92,7 +92,7 @@ export const OperatorCredentialVisualizer: React.FC<OperatorCredentialVisualizer
                 <Cpu className="w-2.5 h-2.5 text-black" />
               </div>
               <span className="text-[9px] font-mono text-white/80 font-bold tracking-wider">
-                CAMEYE® ENCLAVE
+                OCCUSAFE® ENCLAVE
               </span>
             </div>
             <span className="text-[10px] font-mono font-bold text-orange-400 tracking-widest">
@@ -116,7 +116,7 @@ export const OperatorCredentialVisualizer: React.FC<OperatorCredentialVisualizer
                 {name || 'Prospective Operator'}
               </div>
               <div className="text-[10px] text-[#a3a3a3] truncate font-mono">
-                {email || 'operator@cameye.internal'}
+                {email || 'operator@occusafe.internal'}
               </div>
               <div className="mt-0.5 flex items-center gap-1.5">
                 <span className="px-1.5 py-0.2 rounded text-[9px] font-medium bg-orange-500/20 text-orange-400 border border-orange-500/30 truncate">

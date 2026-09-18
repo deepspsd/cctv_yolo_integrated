@@ -1,4 +1,4 @@
-# MediaMTX Configuration for CCTV Priya Textiles
+# MediaMTX Configuration for OccuSafe - Occupational Safety Monitoring
 # Optimized for On-Demand RTSP -> WebRTC (WHEP) streaming
 
 logLevel: info
@@ -6,7 +6,7 @@ logDestinations: [stdout]
 
 # RTSP Server
 rtsp: yes
-protocols: [tcp]
+rtspTransports: [tcp]
 rtspAddress: :8554
 
 # RTMP Server
@@ -28,9 +28,28 @@ apiAddress: :9997
 
 # Dynamic Paths Template
 paths:
-  # On-demand camera path rule
-  camera/~^(.+)$:
+  # Default path for all cameras - allows publishers and readers
+  all_others:
+    maxReaders: 50
+  
+  # Example camera paths with RTSP sources (add your actual cameras here)
+  camera1:
+    source: rtsp://admin:password@192.168.1.100:554/stream
     sourceOnDemand: yes
     sourceOnDemandStartTimeout: 10s
     sourceOnDemandCloseAfter: 10s
+    maxReaders: 50
+    
+  camera2:
+    source: rtsp://admin:password@192.168.1.101:554/stream
+    sourceOnDemand: yes
+    sourceOnDemandStartTimeout: 10s
+    sourceOnDemandCloseAfter: 10s
+    maxReaders: 50
+    
+  # For cameras that will be published from your application
+  app_camera1:
+    maxReaders: 50
+    
+  app_camera2:
     maxReaders: 50

@@ -433,13 +433,13 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
         // Navigate prev
         const prevAlert = alertsList[currentIndex - 1];
         if (prevAlert) {
-          (window as any).__cameye_select_alert?.(prevAlert);
+          (window as any).__occusafe_select_alert?.(prevAlert);
         }
       } else if (e.key === 'ArrowRight' && hasNext) {
         // Navigate next
         const nextAlert = alertsList[currentIndex + 1];
         if (nextAlert) {
-          (window as any).__cameye_select_alert?.(nextAlert);
+          (window as any).__occusafe_select_alert?.(nextAlert);
         }
       }
     };
@@ -525,7 +525,7 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
               <button
                 disabled={!hasPrev}
                 onClick={() => {
-                  if (hasPrev) (window as any).__cameye_select_alert?.(alertsList[currentIndex - 1]);
+                  if (hasPrev) (window as any).__occusafe_select_alert?.(alertsList[currentIndex - 1]);
                 }}
                 className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Previous Incident (Left Arrow)"
@@ -538,7 +538,7 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
               <button
                 disabled={!hasNext}
                 onClick={() => {
-                  if (hasNext) (window as any).__cameye_select_alert?.(alertsList[currentIndex + 1]);
+                  if (hasNext) (window as any).__occusafe_select_alert?.(alertsList[currentIndex + 1]);
                 }}
                 className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Next Incident (Right Arrow)"
@@ -807,10 +807,10 @@ const EvidenceViewerModal: React.FC<EvidenceViewerModalProps> = ({
                   anomalyService.downloadEvidencePhoto(currentAlert.id, currentAlert.anomalyType);
                 }}
                 className="w-full flex items-center justify-center gap-2 rounded-xl border border-orange-500/40 bg-orange-500/15 hover:bg-orange-500/25 text-orange-400 py-2 text-xs font-bold transition shadow-xs cursor-pointer"
-                title="Export high-resolution evidence photo with official CamEye® watermark overlay"
+                title="Export high-resolution evidence photo with official OccuSafe® watermark overlay"
               >
                 <Download className="h-4 w-4 text-orange-400" />
-                <span>Export Photo (CamEye® Watermark)</span>
+                <span>Export Photo (OccuSafe® Watermark)</span>
               </button>
 
               {onDelete && (
@@ -1046,7 +1046,7 @@ const IncidentEvidenceCard: React.FC<IncidentEvidenceCardProps> = ({
               anomalyService.downloadEvidencePhoto(alert.id, alert.anomalyType);
             }}
             className="p-1.5 text-amber-500 hover:text-amber-400 hover:bg-amber-500/10 rounded-md transition-colors cursor-pointer"
-            title="Export Evidence Photo with CamEye® Watermark"
+            title="Export Evidence Photo with OccuSafe® Watermark"
           >
             <Download className="w-3.5 h-3.5" />
           </button>
@@ -1446,11 +1446,11 @@ export const AlertsPage: React.FC<AlertsPageProps> = ({
 
   // Connect global window helper for modal prev/next keyboard navigation
   useEffect(() => {
-    (window as any).__cameye_select_alert = (alert: AnomalyAlertEvent) => {
+    (window as any).__occusafe_select_alert = (alert: AnomalyAlertEvent) => {
       setInspectAlert(alert);
     };
     return () => {
-      delete (window as any).__cameye_select_alert;
+      delete (window as any).__occusafe_select_alert;
     };
   }, []);
 

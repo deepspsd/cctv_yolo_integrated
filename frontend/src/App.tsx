@@ -79,7 +79,7 @@ export default function App() {
 
   // Dark Mode Theme State (Matt Black + Cyber Orange Accents)
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
-    const saved = localStorage.getItem('cameye_theme');
+    const saved = localStorage.getItem('occusafe_theme');
     if (saved === 'light' || saved === 'dark') return saved;
     return 'dark'; // Default to awesome dark matt black mode as requested
   });
@@ -89,7 +89,7 @@ export default function App() {
   const toggleTheme = useCallback(() => {
     setTheme((prev) => {
       const next = prev === 'dark' ? 'light' : 'dark';
-      localStorage.setItem('cameye_theme', next);
+      localStorage.setItem('occusafe_theme', next);
       return next;
     });
   }, []);

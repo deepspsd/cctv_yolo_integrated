@@ -15,10 +15,16 @@ ENV/
 # uv
 .uv/
 
-# Secrets
+# Secrets & Certificates
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.cert
+*.crt
+auto.crt
+auto.key
 
 # Database (runtime)
 *.db

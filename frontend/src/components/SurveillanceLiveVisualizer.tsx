@@ -274,7 +274,7 @@ export const SurveillanceLiveVisualizer: React.FC = () => {
 
           <div className="flex items-center justify-between text-[9.5px] font-mono pt-1 border-t border-current/20">
             <span className="truncate">{timecode || 'SYNCHRONIZING TELEMETRY...'}</span>
-            <span className="shrink-0 font-bold ml-2">CAMEYE® RTSP</span>
+            <span className="shrink-0 font-bold ml-2">OCCUSAFE® RTSP</span>
           </div>
         </div>
       </div>

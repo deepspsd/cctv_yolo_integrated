@@ -230,13 +230,13 @@ export const anomalyService = {
   },
 
   /**
-   * Triggers direct browser download of evidence photo with CamEye® presentation watermark.
+   * Triggers direct browser download of evidence photo with OccuSafe® presentation watermark.
    */
   async downloadEvidencePhoto(id: string, anomalyType: string = 'evidence'): Promise<void> {
     const url = this.getEvidenceUrl(id, { download: true, watermark: true });
     const a = document.createElement('a');
     a.href = url;
-    a.download = `cameye_evidence_${anomalyType}_${id}.jpg`;
+    a.download = `occusafe_evidence_${anomalyType}_${id}.jpg`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

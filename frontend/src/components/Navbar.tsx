@@ -129,7 +129,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className="font-serif italic font-semibold text-[30px] leading-none text-[#0a0a0a] dark:text-white"
                 style={{ letterSpacing: '-0.08em' }}
               >
-                CamEye
+                OccuSafe
               </span>
               <sup
                 className="font-sans font-semibold text-[14px] text-[#0a0a0a] dark:text-orange-400 ml-0.5"
@@ -540,7 +540,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Drawer Footer with Copyright & System Stats */}
         <div className="max-w-[1200px] w-full mx-auto pt-8 border-t border-black/[0.08] dark:border-white/[0.08] flex flex-col sm:flex-row justify-between items-start sm:items-center text-[13px] text-[#6b6b6b] dark:text-[#a1a1aa] gap-4">
           <div className="flex items-center gap-4">
-            <span>© 2026 CamEye Technologies Inc.</span>
+            <span>© 2026 OccuSafe - Occupational Safety Monitoring</span>
             <span className="w-1 h-1 rounded-full bg-black/20 dark:bg-white/20" />
             <span>Firmware v4.8.2-rtsp</span>
             <span className="w-1 h-1 rounded-full bg-black/20 dark:bg-white/20" />

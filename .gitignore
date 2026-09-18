@@ -10,6 +10,7 @@
 *.pem
 *.key
 *.cert
+*.crt
 *.p12
 *.pfx
 secrets/
@@ -165,3 +166,5 @@ data/
 !frontend/src/assets/**
 !public/**
 memory.md
+backend/auto.crt
+backend/auto.key

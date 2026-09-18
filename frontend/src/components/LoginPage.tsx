@@ -104,7 +104,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   className="font-serif italic font-semibold text-[26px] leading-none text-[#0a0a0a] dark:text-white"
                   style={{ letterSpacing: '-0.08em' }}
                 >
-                  CamEye
+                  OccuSafe
                 </span>
                 <sup
                   className="font-sans font-semibold text-[12px] text-[#0a0a0a] dark:text-white ml-0.5"
@@ -149,7 +149,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                     type="email"
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    placeholder="officer@cameye.internal"
+                    placeholder="officer@occusafe.internal"
                     disabled={isLoading}
                     required
                     className="w-full pl-8 pr-3 py-1.5 text-[13px] bg-white dark:bg-[#181820] border border-black/[0.15] dark:border-white/[0.15] focus:border-black dark:focus:border-orange-500 focus:ring-1 focus:ring-black dark:focus:ring-orange-500/30 rounded-lg text-[#0a0a0a] dark:text-white placeholder-[#8c8c8c] dark:placeholder-[#71717a] tracking-tight focus:outline-none transition-all"

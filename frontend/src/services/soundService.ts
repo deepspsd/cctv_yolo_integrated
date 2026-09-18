@@ -10,7 +10,7 @@ class SoundService {
 
   constructor() {
     // Check localStorage preference
-    const stored = localStorage.getItem('cameye_sound_effects');
+    const stored = localStorage.getItem('occusafe_sound_effects');
     if (stored !== null) {
       this.soundEnabled = stored === 'true';
     }
@@ -36,7 +36,7 @@ class SoundService {
 
   public toggleSound(): boolean {
     this.soundEnabled = !this.soundEnabled;
-    localStorage.setItem('cameye_sound_effects', String(this.soundEnabled));
+    localStorage.setItem('occusafe_sound_effects', String(this.soundEnabled));
     if (this.soundEnabled) {
       this.playTactileBlip(800, 0.04);
     }

@@ -37,7 +37,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 SEED_USERS = [
     {
         "name": "Sarah Jenkins",
-        "email": "admin@cameye.internal",
+        "email": "admin@occusafe.internal",
         "password": "Security2026!",
         "role": UserRoleEnum.ADMINISTRATOR,
         "facility": "HQ Operations & Perimeter",
@@ -45,7 +45,7 @@ SEED_USERS = [
     },
     {
         "name": "Marcus Vance",
-        "email": "operator@cameye.internal",
+        "email": "operator@occusafe.internal",
         "password": "Watchdog2026!",
         "role": UserRoleEnum.SURVEILLANCE_OPERATOR,
         "facility": "Warehouse & Logistics Hub",
@@ -53,7 +53,7 @@ SEED_USERS = [
     },
     {
         "name": "Elena Rostova",
-        "email": "elena@cameye.internal",
+        "email": "elena@occusafe.internal",
         "password": "Sentinel2026!",
         "role": UserRoleEnum.SECURITY_OFFICER,
         "facility": "Research Facility North",

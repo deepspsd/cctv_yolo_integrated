@@ -22,10 +22,10 @@ from app.config import settings
 # Indian Standard Time (IST - Asia/Kolkata, UTC+5:30)
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
-def apply_cameye_watermark(img_bgr: np.ndarray, meta_text: Optional[str] = None) -> np.ndarray:
+def apply_occusafe_watermark(img_bgr: np.ndarray, meta_text: Optional[str] = None) -> np.ndarray:
     """
-    Renders an elegant, official CamEye® presentation watermark overlay along the bottom.
-    Includes dark translucent ribbon, CamEye® italic branding, shield indicator, and IST timestamp.
+    Renders an elegant, official OccuSafe® presentation watermark overlay along the bottom.
+    Includes dark translucent ribbon, OccuSafe® italic branding, shield indicator, and IST timestamp.
     """
     if img_bgr is None or img_bgr.size == 0:
         return img_bgr
@@ -43,8 +43,8 @@ def apply_cameye_watermark(img_bgr: np.ndarray, meta_text: Optional[str] = None)
     # Accent orange line on top of ribbon
     cv2.line(img, (0, h - bar_h), (w, h - bar_h), (30, 140, 245), 2)
 
-    # CamEye® Brand mark
-    brand_text = "CamEye(R) SURVEILLANCE EVIDENCE"
+    # OccuSafe® Brand mark
+    brand_text = "OccuSafe(R) SURVEILLANCE EVIDENCE"
     font = cv2.FONT_HERSHEY_DUPLEX
     font_scale = max(0.48, bar_h / 68.0)
     y_pos = int(h - bar_h / 2 + 5)
@@ -52,15 +52,15 @@ def apply_cameye_watermark(img_bgr: np.ndarray, meta_text: Optional[str] = None)
     # Glow / shadow for brand
     cv2.putText(img, brand_text, (16, y_pos + 1), font, font_scale, (0, 0, 0), 2, cv2.LINE_AA)
     # Bright white / orange brand
-    cv2.putText(img, "CamEye", (16, y_pos), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
-    cameye_size = cv2.getTextSize("CamEye", font, font_scale, 1)[0]
-    cv2.putText(img, "(R) SURVEILLANCE EVIDENCE", (18 + cameye_size[0], y_pos), font, font_scale * 0.85, (30, 140, 245), 1, cv2.LINE_AA)
+    cv2.putText(img, "OccuSafe", (16, y_pos), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+    occusafe_size = cv2.getTextSize("OccuSafe", font, font_scale, 1)[0]
+    cv2.putText(img, "(R) SURVEILLANCE EVIDENCE", (18 + occusafe_size[0], y_pos), font, font_scale * 0.85, (30, 140, 245), 1, cv2.LINE_AA)
 
     # Right-aligned IST metadata if provided
     if meta_text:
         meta_font_scale = max(0.40, bar_h / 80.0)
         text_size = cv2.getTextSize(meta_text, cv2.FONT_HERSHEY_SIMPLEX, meta_font_scale, 1)[0]
-        x_meta = max(w - text_size[0] - 16, cameye_size[0] + 160)
+        x_meta = max(w - text_size[0] - 16, occusafe_size[0] + 160)
         cv2.putText(img, meta_text, (x_meta, y_pos), cv2.FONT_HERSHEY_SIMPLEX, meta_font_scale, (200, 220, 240), 1, cv2.LINE_AA)
 
     return img
@@ -865,7 +865,7 @@ async def get_anomaly_evidence(
 ):
     """
     Stream evidence snapshot securely from local backend storage.
-    Supports in-memory AES decryption, download attachment headers, and CamEye® presentation watermark.
+    Supports in-memory AES decryption, download attachment headers, and OccuSafe® presentation watermark.
     """
     req_user = await authenticate_request(request, token_param=token, db=db)
 
@@ -924,7 +924,7 @@ async def get_anomaly_evidence(
     if not raw_bytes:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence image file not found or corrupted.")
 
-    # Apply CamEye® presentation watermark if requested or downloaded
+    # Apply OccuSafe® presentation watermark if requested or downloaded
     final_bytes = raw_bytes
     if watermark or download:
         try:
@@ -934,7 +934,7 @@ async def get_anomaly_evidence(
                 ist_time_str = to_ist_str(evt.confirmed_at or evt.created_at, "%d %b %Y, %I:%M:%S %p IST")
                 cam_label = camera_name or evt.camera_id
                 meta = f"{cam_label} | {evt.anomaly_type} | {ist_time_str}"
-                watermarked = apply_cameye_watermark(img_bgr, meta_text=meta)
+                watermarked = apply_occusafe_watermark(img_bgr, meta_text=meta)
                 success, enc = cv2.imencode('.jpg', watermarked, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                 if success:
                     final_bytes = enc.tobytes()
@@ -942,7 +942,7 @@ async def get_anomaly_evidence(
             pass
 
     disposition_type = "attachment" if download else "inline"
-    filename = f"cameye_evidence_{evt.anomaly_type}_{id}.jpg"
+    filename = f"occusafe_evidence_{evt.anomaly_type}_{id}.jpg"
 
     return Response(
         content=final_bytes,

@@ -1,5 +1,5 @@
 {
-  "name": "CamEye CCTV Management",
+  "name": "OccuSafe - Occupational Safety Monitoring",
   "description": "Production CCTV camera and zone management platform with on-demand live streaming, RTSP credential protection, and real-time status telemetry.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
