@@ -2,7 +2,11 @@ import { Camera, CameraStatus, StreamInfo, CameraTestResult, CameraAiState, Came
 import { apiFetch, getStoredToken, tryRefreshToken } from './authService';
 
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:5000/api';
-const WS_BASE_URL  = (import.meta as any).env?.VITE_WS_URL       || 'ws://localhost:5000/ws/cameras';
+const RAW_WS_URL   = (import.meta as any).env?.VITE_WS_URL       || 'ws://localhost:5000/ws/cameras';
+// Relative WS path (e.g. "/ws/cameras" behind the production reverse proxy) resolves against the page origin.
+const WS_BASE_URL  = RAW_WS_URL.startsWith('/')
+  ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${RAW_WS_URL}`
+  : RAW_WS_URL;
 
 // Mask credentials in RTSP URLs for security
 export function maskRtspUrl(url: string): string {

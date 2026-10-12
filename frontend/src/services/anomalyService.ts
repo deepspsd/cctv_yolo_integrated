@@ -253,7 +253,7 @@ export const anomalyService = {
     if (snapshotPath) {
       const clean = snapshotPath.replace(/\\/g, '/').replace(/^\.?\//, '');
       if (clean.startsWith('http')) return clean;
-      return `http://localhost:5000/${clean}`;
+      return `${API_BASE_URL.replace(/\/api\/?$/, '')}/${clean}`;
     }
     return '';
   }

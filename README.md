@@ -237,17 +237,52 @@ app_camera1:
 
 ## 🚀 Production Deployment
 
-### Docker Deployment (Coming Soon)
+### Docker Deployment
+
+Stack: `frontend` (nginx serving the UI and proxying `/api`, `/ws`, `/webrtc`), `backend` (FastAPI + YOLO, single worker), `mediamtx` (RTSP to WebRTC). Only the UI port and the WebRTC media port are published.
+
+**Server requirements:** Linux x86_64, Docker Engine 24+ with Compose v2, about 15 GB free disk. For GPU inference you also need the NVIDIA driver (535+) and the NVIDIA Container Toolkit.
+
+1. Copy the repository to the server, including `models/*.pt`.
+2. Create the environment file and fill in every `CHANGE_ME`:
+   ```bash
+   cp .env.example .env
+   openssl rand -base64 24   # CAMERA_SECRET_KEY
+   openssl rand -hex 48      # JWT_SECRET_KEY
+   ```
+   Set `WEBRTC_PUBLIC_HOST` to the server IP or hostname that operators' browsers use.
+3. Build and start the stack:
+   ```bash
+   # CPU
+   docker compose up -d --build
+   # NVIDIA GPU
+   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+   ```
+4. Open `http://<server>/` (or `http://<server>:HTTP_PORT/`).
+5. Log in with a seeded account and change all default passwords at once.
+
+**Firewall:** allow TCP `HTTP_PORT` (default 80) and UDP + TCP `8189` (WebRTC media). The server must reach the cameras' RTSP ports.
+
+**Data:** the SQLite DB and evidence images live in the `occusafe_occusafe-data` volume, mounted at `/app/data` in the container. Back it up with:
 ```bash
-# Build and run with docker-compose
-docker-compose up -d
+docker run --rm -v occusafe_occusafe-data:/data -v "$PWD":/backup alpine tar czf /backup/occusafe-data.tgz -C /data .
 ```
 
-### Manual Production Setup
-1. **Backend**: Use Gunicorn with multiple workers
-2. **Frontend**: Build static files with `npm run build`
-3. **Database**: Consider PostgreSQL for production
-4. **Reverse Proxy**: Use Nginx for SSL and load balancing
+**Migrating an existing `cameras.db`:** keep the same `CAMERA_SECRET_KEY` the old install used, or saved camera passwords cannot be decrypted. Then copy the DB into the volume:
+```bash
+docker compose cp backend/data/cameras.db backend:/app/data/cameras.db
+docker compose exec -u root backend chown app:app /app/data/cameras.db
+docker compose restart backend
+```
+
+**Operations:**
+```bash
+docker compose ps                 # health status
+docker compose logs -f backend    # inference / API logs
+docker compose up -d --build      # redeploy after code update
+```
+
+**HTTPS:** put a TLS terminator (Caddy, Traefik, or host nginx) in front of the `frontend` port. The UI auto-switches to `wss://` when served over HTTPS.
 
 ## 📊 Features
 

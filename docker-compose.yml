@@ -1,0 +1,86 @@
+# ================================================================
+# OccuSafe — production stack
+#
+#   cp .env.example .env      # then fill in secrets + WEBRTC_PUBLIC_HOST
+#   docker compose up -d --build
+#
+# GPU servers (NVIDIA Container Toolkit installed):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# ================================================================
+
+name: occusafe
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.0
+    restart: unless-stopped
+    command: ["/mediamtx.yml"]
+    volumes:
+      - ./docker/mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      # Address(es) browsers use to reach this server, so WebRTC ICE candidates are routable.
+      MTX_WEBRTCADDITIONALHOSTS: ${WEBRTC_PUBLIC_HOST:?Set WEBRTC_PUBLIC_HOST in .env (server LAN IP or hostname)}
+    ports:
+      # WebRTC media (signalling goes through the frontend proxy at /webrtc/)
+      - "8189:8189/udp"
+      - "8189:8189/tcp"
+      # RTSP re-stream for external NVR / VLC clients (remove if not needed)
+      - "${RTSP_BIND:-127.0.0.1}:8554:8554"
+    networks: [occusafe]
+    logging: *default-logging
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: occusafe-backend:latest
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+    env_file: .env
+    environment:
+      # Container-internal wiring — not meant to be overridden from .env
+      MEDIAMTX_HOST: mediamtx
+      MEDIAMTX_API_URL: http://mediamtx:9997
+      MEDIAMTX_RTSP_PORT: "8554"
+      # Browser-facing WHEP base, served same-origin by the frontend nginx proxy
+      MEDIAMTX_WHEP_URL: /webrtc
+      CAMERA_DB_PATH: /app/data/cameras.db
+      AI_EVIDENCE_DIR: /app/data/evidence
+    volumes:
+      - occusafe-data:/app/data
+    # Not published: reachable only through the frontend proxy.
+    expose:
+      - "5000"
+    shm_size: "1gb"   # torch / opencv shared memory
+    stop_grace_period: 30s
+    networks: [occusafe]
+    logging: *default-logging
+
+  frontend:
+    build:
+      context: ./frontend
+    image: occusafe-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+      mediamtx:
+        condition: service_started
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    networks: [occusafe]
+    logging: *default-logging
+
+networks:
+  occusafe:
+    driver: bridge
+
+volumes:
+  occusafe-data:

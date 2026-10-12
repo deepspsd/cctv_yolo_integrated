@@ -1,0 +1,66 @@
+###############################################
+# MediaMTX config for the Docker deployment
+# Camera paths are added at runtime by the backend through the API
+# (camera/<id>), so no static paths are defined here.
+###############################################
+
+logLevel: info
+logDestinations: [stdout]
+
+readTimeout: 10s
+writeTimeout: 10s
+
+# Authentication: browsers may read; only containers on the internal
+# Docker network may publish or use the control API.
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+      - action: playback
+  - user: any
+    pass:
+    ips: ['127.0.0.1', '::1', '172.16.0.0/12', '10.0.0.0/8', '192.168.0.0/16']
+    permissions:
+      - action: publish
+      - action: api
+      - action: metrics
+
+api: yes
+apiAddress: :9997
+
+metrics: no
+pprof: no
+playback: no
+
+rtsp: yes
+rtspTransports: [tcp]
+rtspAddress: :8554
+
+rtmp: no
+srt: no
+moq: no
+
+hls: no
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: no
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcIPsFromInterfaces: yes
+# Server LAN IP / hostname browsers reach. Set via MTX_WEBRTCADDITIONALHOSTS
+# in docker-compose (from WEBRTC_PUBLIC_HOST in .env).
+webrtcAdditionalHosts: []
+
+pathDefaults:
+  record: no
+  maxReaders: 50
+  sourceOnDemandStartTimeout: 10s
+  sourceOnDemandCloseAfter: 10s
+  rtspTransport: tcp
+
+paths:
+  all_others:

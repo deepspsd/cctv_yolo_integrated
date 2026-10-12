@@ -26,7 +26,7 @@ class CameraStreamReader:
         
         # Determine preferred MediaMTX RTSP URL vs direct
         clean_id = camera_id.replace("-", "_").lower()
-        self.mediamtx_rtsp_url = f"rtsp://127.0.0.1:{settings.MEDIAMTX_RTSP_PORT}/camera/{clean_id}"
+        self.mediamtx_rtsp_url = f"rtsp://{settings.MEDIAMTX_HOST}:{settings.MEDIAMTX_RTSP_PORT}/camera/{clean_id}"
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
